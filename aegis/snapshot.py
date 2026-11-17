@@ -20,6 +20,7 @@ import re
 import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,12 @@ from aegis.approvals import Approval, load_approval
 from aegis.cli import AUDIT_NAME, EVENTS_NAME, INCIDENTS_NAME, LATE, VERDICTS_NAME
 from aegis.compare import variant_name
 from aegis.contracts.decision import BANDS, ActionDecision, ActionOutcome, Decision
-from aegis.contracts.event import ContractError, Event, format_ts
+from aegis.contracts.event import ContractError, Event, format_ts, parse_ts
 from aegis.contracts.incident import _INCIDENT_ID_RE, Incident, LinkReason
 from aegis.contracts.verdict import Verdict
 from aegis.decide import decide, latest_verdict
 from aegis.evidence import target_key
+from aegis.feed import SUPERSEDED_NAME, read_status, read_superseded
 from aegis.policy import DEFAULT_POLICY_FILE, Policy, load_policy
 from aegis.store import read_events, read_incidents, read_verdicts
 
@@ -46,6 +48,7 @@ LINK_TEXT = {
     LinkReason.SAME_RULE: "same rule firing again",
 }
 ACTION_KINDS = ("approval", "action_refused", "action_started", "action_result")
+FEED_SILENT = 90  # seconds without contact before a running feed counts as silent
 
 
 @dataclass
@@ -67,6 +70,8 @@ class Snapshot:
     incident_problems: dict = field(default_factory=dict)  # incident id -> why it cannot be decided
     incidents_of: dict = field(default_factory=dict)  # event id -> incident ids holding it
     trail: dict = field(default_factory=dict)  # incident id -> its verified audit entries
+    superseded: dict = field(default_factory=dict)  # old incident id -> the incident it grew into
+    earlier: dict = field(default_factory=dict)  # current incident id -> the old ids it grew from
 
     def find(self, wanted: str) -> Incident | None:
         """The incident with this id, or the only one whose id starts with it."""
@@ -76,6 +81,15 @@ class Snapshot:
             return None
         matches = [i for i in self.incidents if i.incident_id.startswith(prefix)]
         return matches[0] if len(matches) == 1 else None
+
+    def successor(self, old_id: str) -> str | None:
+        """The current incident an old, grown incident id became, if the live feed recorded it."""
+        current = {i.incident_id for i in self.incidents}
+        seen = set()
+        while old_id in self.superseded and old_id not in seen:
+            seen.add(old_id)
+            old_id = self.superseded[old_id]
+        return old_id if seen and old_id in current else None
 
 
 class RunView:
@@ -91,12 +105,18 @@ class RunView:
         version = fingerprint(self.run_dir, self.policy_path)
         with self._lock:
             if self._snapshot is None or self._snapshot.version != version:
-                self._snapshot = load_snapshot(self.run_dir, self.policy_path, version)
+                for _ in range(3):
+                    snap = load_snapshot(self.run_dir, self.policy_path, version)
+                    after = fingerprint(self.run_dir, self.policy_path)
+                    if after == version:
+                        break
+                    version = after  # a file changed while it was being read (the live feed): read again
+                self._snapshot = snap
             return self._snapshot
 
 
 def watched_files(run_dir: Path, policy_path: Path) -> list[Path]:
-    files = [run_dir / name for name in (EVENTS_NAME, INCIDENTS_NAME, VERDICTS_NAME, AUDIT_NAME)]
+    files = [run_dir / name for name in (EVENTS_NAME, INCIDENTS_NAME, VERDICTS_NAME, AUDIT_NAME, SUPERSEDED_NAME)]
     files.append(policy_path)
     folder = run_dir / APPROVALS_FOLDER
     if folder.is_dir():
@@ -130,6 +150,11 @@ def load_snapshot(run_dir: Path, policy_path: Path, version: str | None = None) 
     for incident in snap.incidents:
         for event_id in incident.event_ids:
             snap.incidents_of.setdefault(event_id, []).append(incident.incident_id)
+    snap.superseded = read_superseded(run_dir)
+    for old_id in snap.superseded:
+        now_id = snap.successor(old_id)
+        if now_id:
+            snap.earlier.setdefault(now_id, []).append(old_id)
     _read_approvals(snap)
     _read_audit(snap)
     _decide_all(snap)
@@ -212,15 +237,54 @@ def _decide_all(snap: Snapshot) -> None:
 # Plain data for the pages and the JSON API
 # --------------------------------------------------------------------------
 
-def header(snap: Snapshot) -> dict:
+def header(snap: Snapshot, now: datetime | None = None) -> dict:
     state = snap.audit_state
+    feed = feed_view(snap.run_dir, now)
+    problems = list(snap.problems)
+    if feed:
+        problems += [f"Live feed gap ({gap.get('time', '')[:19]} UTC): {gap.get('reason')}" for gap in feed["gaps"]]
+        if feed["issue_count"]:
+            latest = feed["issues"][-1]["text"] if feed["issues"] else ""
+            problems.append(f"Live feed: {feed['issue_count']} alert(s) or lines could not be read; latest: {latest}")
     return {
         "version": snap.version,
         "run_dir": str(snap.run_dir),
         "policy": {"id": snap.policy.id if snap.policy else None, "file": str(snap.policy_path)},
         "audit": {"ok": state.ok, "entries": state.entries, "last_hash": state.last_hash,
                   "problem": state.problem, "lines": len(snap.audit_entries)},
-        "problems": list(snap.problems),
+        "feed": feed,
+        "problems": problems,
+    }
+
+
+def feed_view(run_dir: Path, now: datetime | None = None) -> dict | None:
+    """The live feed's state, read fresh on every request (it changes every few seconds)."""
+    state = read_status(run_dir)
+    if state is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        age = int((now - parse_ts(state["last_contact"])).total_seconds())
+    except (KeyError, TypeError, ContractError):
+        age = None
+    status = state.get("status")
+    if status == "connected":
+        shown = "connected" if age is not None and age <= FEED_SILENT else "silent"
+    elif status in ("connecting", "disconnected"):
+        shown = "reconnecting"
+    elif status == "stopped":
+        shown = "stopped"
+    else:
+        shown = "unknown"
+    gaps = state.get("gaps") if isinstance(state.get("gaps"), list) else []
+    issues = state.get("issues") if isinstance(state.get("issues"), list) else []
+    return {
+        "state": shown, "status": status, "manager": state.get("manager"), "message": state.get("message") or "",
+        "last_contact": state.get("last_contact"), "age_seconds": age,
+        "alerts": state.get("alerts", 0), "events_added": state.get("events_added", 0),
+        "gaps": [g for g in gaps if isinstance(g, dict)],
+        "issues": [i for i in issues if isinstance(i, dict)],
+        "issue_count": int(state.get("issue_count") or 0),
     }
 
 
@@ -332,9 +396,12 @@ def incident_view(snap: Snapshot, incident: Incident) -> dict:
         "decide": _decision_data(snap, incident, decision, label_of) if decision else None,
         "act": {
             "approval": _approval_data(snap, incident_id),
-            "trail": [audit_entry(e, True) for e in trail if e.get("kind") in ACTION_KINDS],
+            "trail": [audit_entry(e, True) for e in history(snap, incident_id) if e.get("kind") in ACTION_KINDS],
             "decisions_recorded": len(decided),
             "last_decided": decided[-1].get("time") if decided else None,
+            "earlier_versions": len(snap.earlier.get(incident_id, [])),
+            "earlier_approvals": [dict(_approval_data(snap, old_id), incident_id=old_id)
+                                  for old_id in snap.earlier.get(incident_id, []) if old_id in snap.approvals],
         },
         "events": [_event_data(event, label_of, links_of) for event in events],
     }
@@ -385,9 +452,21 @@ def _refs(snap: Snapshot, event_ids, label_of: dict) -> list[dict]:
     return [{"event_id": e, "label": label_of.get(e, ""), "known": e in snap.events} for e in event_ids]
 
 
+def history(snap: Snapshot, incident_id: str) -> list[dict]:
+    """Verified audit entries for this incident and for the earlier versions it grew from.
+
+    What was done stays done when an incident grows; an approval does not carry
+    over (it was for different evidence), and the pages say so.
+    """
+    entries = list(snap.trail.get(incident_id, []))
+    for old_id in snap.earlier.get(incident_id, []):
+        entries += snap.trail.get(old_id, [])
+    return sorted(entries, key=lambda e: e.get("seq") or 0)
+
+
 def _results(snap: Snapshot, incident_id: str, action: str, target: str) -> list[dict]:
     key = (action, target_key(action, target))
-    return [e for e in snap.trail.get(incident_id, []) if e.get("kind") == "action_result"
+    return [e for e in history(snap, incident_id) if e.get("kind") == "action_result"
             and isinstance(e.get("data"), dict)
             and (e["data"].get("action"), target_key(action, str(e["data"].get("target", "")))) == key]
 

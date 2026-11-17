@@ -22,7 +22,7 @@ reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
 | 3 | Evidence tools + AI investigator (Ollama) | done |
 | 4 | Risk score + policy engine | done |
 | 5 | Lab target, controlled actions, audit log | done |
-| 6 | Read-only dashboard and API; live feed from Wazuh | dashboard done, live feed next |
+| 6 | Read-only dashboard and API; live feed from Wazuh | done |
 | 7 | Evaluation on labelled cases | planned |
 
 ## Try it
@@ -40,6 +40,7 @@ python -m aegis show <incident id>
 python -m aegis investigate <incident id>
 python -m aegis decide <incident id>
 python -m aegis serve --dir runs\lab
+python -m aegis watch
 python -m unittest
 ```
 
@@ -87,16 +88,45 @@ python -m unittest
   and has no approve or act button: those stay on the command line. The same
   data is at `/api/overview`, `/api/incident/<id>`, `/api/event/<id>` and
   `/api/audit` as JSON. `--port` picks another port.
+* `watch` pulls new alerts from the Wazuh manager as they happen, into
+  `runs\live`, and works out the incidents again after every batch. Run
+  `serve --dir runs\live` beside it to watch them on the dashboard. It needs
+  the manager set up once (below). `--once` catches up and stops;
+  `--from-start` makes the very first run read today's alerts from the
+  beginning instead of from now.
 * `unittest` runs the test suite. It never needs the model.
 
 ### The lab VM
 
-`lab/` holds the two files for the lab VM. `aegis-gate` is the only program
-Aegis can run there: `status`, `lock` or `unlock` of one user, refusing
+`lab/` holds the files for the lab VM, and the feed program and its setup
+script for the Wazuh manager (see The live feed). `aegis-gate` is the only program
+Aegis can run on the lab VM: `status`, `lock` or `unlock` of one user, refusing
 protected and system accounts on its own. `setup-lab.sh` installs it, creates
 the `aegis-exec` account Aegis connects as (key login only, from the laptop
 only, able to run the gate and nothing else) and the `svc_backup` account the
 lab attack guesses.
+
+### The live feed
+
+`lab/aegis-feed` is the only program Aegis can run on the Wazuh manager, and
+it only reads: it streams `alerts.json` as Wazuh writes it, and survives the
+daily rotation by finishing the old file from Wazuh's archive. Aegis reaches
+it over one long SSH connection as `aegis-feed`, whose key works only from
+the laptop and can run nothing else. Aegis pulls; nothing is pushed to it and
+it listens on no port. `setup-manager.sh` creates that account. Once:
+
+```powershell
+ssh-keygen -t ed25519 -f $HOME\.ssh\aegis_feed        # press Enter twice: no passphrase
+scp lab\aegis-feed lab\setup-manager.sh $HOME\.ssh\aegis_feed.pub <you>@192.168.56.105:
+ssh <you>@192.168.56.105
+sudo bash setup-manager.sh "$(cat aegis_feed.pub)"      # on the manager
+```
+
+Then, on the laptop, `python -m aegis watch` in one window and
+`python -m aegis serve --dir runs\live` in another. The position in the
+manager's file is saved after every batch, so stopping and starting again
+carries on where it stopped; anything the feed could not read is listed on
+the dashboard, never skipped silently.
 
 ### The policy
 
@@ -178,6 +208,7 @@ aegis/
   approvals.py a human's sign-off, one file per incident
   execute.py   carries out an approved action on the lab VM, with proof
   audit.py     the hash-chained audit log
+  feed.py      the live feed: pulls alerts from the manager, batch by batch
   snapshot.py  read-only view of a run folder for the dashboard; decides afresh
   server.py    the dashboard and API: 127.0.0.1 only, GET only
   web/         the pages (escaped by default, no JavaScript) and the stylesheet
@@ -189,7 +220,7 @@ aegis/
 data/samples/  synthetic Wazuh-shaped alerts (safe to publish)
 knowledge/     operator notes about this environment
 policy/        what Aegis may do, and where
-lab/           the gate and setup script for the lab VM
+lab/           the gate for the lab VM, the feed for the manager, their setup scripts
 docs/PLAN.md   architecture and roadmap
 tests/         unit tests
 runs/          pipeline output (ignored by git)

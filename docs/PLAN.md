@@ -146,8 +146,17 @@ approvals and actions with before/after proof from the verified audit log.
 audit log), no JavaScript, Content-Security-Policy `default-src 'none'`,
 invisible characters in evidence shown as codes (D35, D36). Every page of
 the three run folders answered and left their files unchanged.
-Part 2, live feed - next: Aegis pulls new alerts from the manager over a
-restricted channel, so Aegis itself exposes no write endpoint.
+Part 2, live feed - done (2026-11-18). `python -m aegis watch` keeps one SSH
+connection to the manager as `aegis-feed`, whose key can run only
+`lab/aegis-feed`, a program that only reads alerts.json and its archives
+(D37). Each batch goes through the same ingest and correlation as an export;
+the position in the manager's file is saved only after the batch is written,
+survives the daily rotation, and anything that cannot be read is reported as
+a gap. The dashboard shows the feed's state and follows incidents as they
+grow (D38). On the real lab the D34 attack arrived as it happened (48
+alerts, no gaps), scored 85 (critical), and was approved and locked from
+`runs\live`; the lock's own log lines then grew the incident, and the
+dashboard carried "done" over to the new version (D39). 298 tests pass.
 
 **7. Evaluation.**
 Labelled cases including benign twins of each attack. Report accuracy, false

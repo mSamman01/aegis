@@ -236,9 +236,27 @@ def _top(header: dict) -> Markup:
             "run folder ", tag("code", header["run_dir"]),
             " · policy ", tag("code", header["policy"]["id"] or "not read"),
             " · audit log ", tag("a", audit_text, href="/audit", class_="ok" if audit["ok"] else "bad"),
+            _feed_fact(header.get("feed")),
             class_="facts"),
         class_="top",
     )
+
+
+def _feed_fact(feed: dict | None) -> Markup:
+    if not feed:
+        return frag()
+    age = feed["age_seconds"]
+    when = f"{_duration(age)} ago" if age is not None else "never"
+    words = {
+        "connected": (f"connected to {feed['manager']} (last contact {when})", "ok"),
+        "silent": (f"no contact for {_duration(age) if age is not None else 'a while'} - is watch still running?",
+                   "bad"),
+        "reconnecting": (f"reconnecting to {feed['manager']}" + (f" ({feed['message']})" if feed["message"] else ""),
+                         "bad"),
+        "stopped": (f"stopped (last contact {when})", "muted"),
+    }
+    text, cls = words.get(feed["state"], (f"state unknown ({feed['status']})", "bad"))
+    return frag(" · live feed ", tag("span", text, class_=cls))
 
 
 def _problems(header: dict) -> Markup:
@@ -564,6 +582,11 @@ def _stage_decide(data: dict) -> Markup:
 
 def _stage_act(data: dict, short: str, run_dir: str) -> Markup:
     dec, act = data["decide"], data["act"]
+    this = data["incident"]["incident_id"]
+
+    def earlier(incident_id: str) -> str:
+        return "" if incident_id == this else (f" - for an earlier version of this incident ({incident_id}), "
+                                               "before more events joined it")
     items = []
     for a in (dec["actions"] if dec else []):
         if a["outcome"] == "deny" and not a["results"]:
@@ -578,7 +601,7 @@ def _stage_act(data: dict, short: str, run_dir: str) -> Markup:
         for result in a["results"]:
             d = result["data"]
             lines.append(tag("p", f"Carried out at {_when(result['time'])} UTC on {d.get('host')} "
-                                  f"({d.get('address')}): {d.get('message')}",
+                                  f"({d.get('address')}): {d.get('message')}{earlier(result['incident_id'])}",
                              class_="ok" if d.get("ok") else "bad"))
             lines.append(_dl([("Before", tag("code", d.get("before"))), ("After", tag("code", d.get("after")))]))
         if a["status"] == "waiting":
@@ -590,11 +613,20 @@ def _stage_act(data: dict, short: str, run_dir: str) -> Markup:
             lines.append(_command("python", "-m", "aegis", "act", short, run_dir=run_dir))
         items.append(tag("div", lines, class_="action-card"))
     approval = act["approval"]
-    trail = tag("table", tag("thead", tag("tr", [tag("th", h) for h in ("Entry", "Time (UTC)", "Kind", "Detail")])),
+    trail = tag("table", tag("thead", tag("tr", [tag("th", h) for h in (
+        "Entry", "Time (UTC)", "Kind", "Detail", "Version")])),
                 tag("tbody", [tag("tr", tag("td", e["seq"], class_="num"), tag("td", _when(e["time"])),
-                                  tag("td", e["kind"]), tag("td", e["summary"])) for e in act["trail"]]),
+                                  tag("td", e["kind"]), tag("td", e["summary"]),
+                                  tag("td", "this one" if e["incident_id"] == this else
+                                      tag("span", f"earlier: {e['incident_id']}", class_="muted mono")))
+                              for e in act["trail"]]),
                 class_="compact") if act["trail"] else tag("p", "No approval or action is recorded for this "
                                                                 "incident.", class_="muted")
+    earlier_approvals = [tag("p", f"Approved for an earlier version ({a['incident_id']}): "
+                                  + ", ".join(f"{x['action']} {x['target']} by {x['by']} at {_when(x['at'])} UTC"
+                                              for x in a["actions"])
+                         + ". An approval does not carry over to new evidence; to act on this version, approve it "
+                           "again.", class_="muted") for a in act["earlier_approvals"]]
     return _stage(
         5, "act", "Act: approvals and what was carried out", "human",
         tag("p", "Approving and acting happen only on the command line. act decides again from scratch and runs "
@@ -605,7 +637,10 @@ def _stage_act(data: dict, short: str, run_dir: str) -> Markup:
         tag("p", f"The approval file was made under policy {approval['policy_id']}, but the policy is now "
                  f"{approval['current_policy']}, so it does not count.", class_="bad")
         if approval and not approval["counts"] else None,
+        earlier_approvals,
         tag("h3", "Audit trail for this incident"),
+        tag("p", f"This incident grew from {act['earlier_versions']} earlier versions as events arrived; their "
+                 "entries are included and marked.", class_="muted") if act["earlier_versions"] else None,
         trail,
         tag("p", f"decide was run {act['decisions_recorded']} times for this incident on the command line "
                  f"(last at {_when(act['last_decided'])} UTC).", class_="muted") if act["decisions_recorded"] else None,
@@ -780,6 +815,7 @@ def audit_page(data: dict, showing_all: bool) -> bytes:
     return document("Aegis - audit log", data["header"], body)
 
 
-def message_page(title: str, message: str, header: dict) -> bytes:
-    body = [tag("p", tag("a", "← all incidents", href="/"), class_="back"), tag("h1", title), tag("p", message)]
+def message_page(title: str, message: str, header: dict, link: tuple[str, str] | None = None) -> bytes:
+    body = [tag("p", tag("a", "← all incidents", href="/"), class_="back"), tag("h1", title), tag("p", message),
+            tag("p", tag("a", link[1], href=link[0])) if link else None]
     return document(f"Aegis - {title}", header, body)

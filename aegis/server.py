@@ -92,6 +92,15 @@ def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
     if match:
         incident = snap.find(match.group(2))
         if incident is None:
+            successor = snap.successor(match.group(2))
+            if successor:
+                message = ("This incident has grown since this link was made: more events joined it, so it is now "
+                           "a different set of evidence with a new id. An approval given for the old id does not "
+                           "carry over.")
+                if api:
+                    return 404, JSON, json_body({"error": message, "now": successor})
+                return 404, HTML, pages.message_page("This incident has grown", message, head,
+                                                     (f"/incident/{successor}", f"Open {successor}"))
             return _not_found(api, head, "No incident has this id, or more than one starts with it.")
         data = snapshot.incident_view(snap, incident)
         return (200, JSON, json_body(data)) if api else (200, HTML, pages.incident_page(data))

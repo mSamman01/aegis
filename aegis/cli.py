@@ -179,11 +179,25 @@ def main(argv: list[str] | None = None) -> int:
     srv.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
     srv.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
 
+    wat = commands.add_parser("watch", help="pull new alerts from the Wazuh manager as they happen (read-only feed)")
+    wat.add_argument("--dir", type=Path, default=RUN_DIR / "live",
+                     help="run folder for the live data (default: runs/live)")
+    wat.add_argument("--manager", default="192.168.56.105", help="the Wazuh manager's address (default: 192.168.56.105)")
+    wat.add_argument("--user", default="aegis-feed", help="account on the manager (default: aegis-feed)")
+    wat.add_argument("--key", default="~/.ssh/aegis_feed", help="SSH key for that account (default: ~/.ssh/aegis_feed)")
+    wat.add_argument("--from-start", action="store_true",
+                     help="first run only: read today's alerts from the beginning instead of from now")
+    wat.add_argument("--once", action="store_true", help="catch up with the manager, then stop")
+    wat.add_argument("--min-level", type=int, default=0, help="ignore alerts below this rule level (default: 0)")
+    wat.add_argument("--window", type=float, default=30, help="correlation window in minutes (default: 30)")
+
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor()
     if args.command == "serve":
         return _serve(args)
+    if args.command == "watch":
+        return _watch(args)
     run_dir: Path = args.dir
     if args.command == "decide":
         return _decide(args)
@@ -545,6 +559,28 @@ def _decision_record(decision) -> dict:
         "model_label": decision.model_label,
         "actions": [[a.action, a.target, a.outcome.value] for a in decision.actions],
     }
+
+
+def _watch(args: argparse.Namespace) -> int:
+    from aegis.feed import Feed, FeedError, FeedSettings  # only this command needs the feed
+
+    if args.window <= 0:
+        print("error: --window must be greater than 0", file=sys.stderr)
+        return 2
+    try:
+        settings = FeedSettings(args.manager, args.user, args.key, args.min_level, timedelta(minutes=args.window))
+    except FeedError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    extra = f" --dir {args.dir}"
+    print(_ascii(f"Live feed from {args.user}@{args.manager} into {args.dir}   (read-only; Ctrl+C stops)"))
+    print(_ascii(f"Dashboard: python -m aegis serve{extra}   (in another window)"), flush=True)
+    feed = Feed(args.dir, settings, say=lambda text: print(_ascii(text), flush=True))
+    try:
+        return feed.run(once=args.once, from_start=args.from_start)
+    except FeedError as exc:
+        print(_ascii(f"error: {exc}"), file=sys.stderr)
+        return 2
 
 
 def _serve(args: argparse.Namespace) -> int:

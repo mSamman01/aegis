@@ -1,0 +1,4 @@
+# Scripts in lab/ run on the Linux VMs: they must keep Unix line endings even when
+# Git checks them out on Windows (a CR at the end of '#!/usr/bin/python3 -I' breaks it).
+lab/* text eol=lf
+*.sh text eol=lf

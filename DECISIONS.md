@@ -516,3 +516,95 @@ becomes script injection, so:
 * The tests found one hole before it shipped: the link check accepted
   `//evil.example/`, which a browser reads as another site. A link may no
   longer start with two slashes.
+
+## D37 - The live feed is pulled over one restricted SSH session (2026-11-18)
+`python -m aegis watch` brings new alerts from the manager as they happen.
+Three ways were considered:
+
+* Wazuh pushing each alert to Aegis (an integration script) - rejected:
+  Aegis would need a listening endpoint that accepts data, which is a way in.
+* The Wazuh indexer's search API - workable, but it needs a user and a role
+  in the indexer's security settings, the indexer's certificate and a
+  password on the laptop, and a search by time can miss alerts that are
+  indexed late (the backlog in D10).
+* SSH to the manager, the same pattern as the lab gate (D29) - chosen. The
+  account `aegis-feed` has a key that works only from the laptop, cannot open
+  a shell, a terminal or a tunnel, and runs one program, `lab/aegis-feed`,
+  which only reads `alerts.json` and Wazuh's archive of old ones. sudo runs it
+  as the owner of the alert files with no arguments allowed - not as root,
+  and not through the wazuh group, which can read the manager's
+  configuration, agent keys included.
+
+How it behaves:
+
+* One long connection, not a login every few seconds. Every SSH login makes
+  about three alerts on the manager (login, session opened, session closed);
+  polling every 10 s would feed Aegis some 26,000 alerts a day about itself.
+* The position in the manager's file is (file id, byte offset), and the file
+  id is a hash of the file's first line, so it survives Wazuh starting a new
+  alerts.json every day. After a rotation the rest of the old file is read
+  from the archive (plain or gzip) before the new file; if the old file
+  cannot be found within two minutes, a gap is reported with the exact file
+  and offset. A truncated file is reported the same way. Nothing is skipped
+  silently (D3).
+* Only complete lines are sent; a line Wazuh is still writing waits.
+* The cursor is saved only after the batch's events and incidents are
+  written. A crash or a dropped connection means reading some alerts again -
+  recognised by their event ids - and never skipping any. A batch cut off
+  before its cursor is thrown away and read again.
+* The same ingest and correlation as an export: a test checks that the feed
+  and `ingest` + `correlate` of the same alerts give the same incidents.
+* The program says "heartbeat" every 30 s while idle; after 90 s of silence
+  Aegis reconnects, waiting 5 s growing to 60 s while it keeps failing. A
+  second `watch` on the same folder, or one for another manager, is refused.
+
+## D38 - Live data on the dashboard (2026-11-18)
+* Files are replaced in one step (written beside, then renamed; retried
+  while Windows has the file open for reading) and new events are appended
+  in one write per batch. The dashboard reads again if a file changed while
+  it was reading.
+* While an attack goes on its incident keeps growing, and every growth is a
+  new id (D12). `superseded.jsonl` records which incident each old id became,
+  so an old link leads to the current one, with a note that an approval for
+  the old id does not carry over. In practice: approve once the incident has
+  stopped growing. `act` decides again and will not run an approval made for
+  different evidence - as designed.
+* The top bar shows the feed's state from `feed.json`, read on every
+  request: connected, silent (no contact for 90 s: is watch running?),
+  reconnecting, or stopped. Gaps and unreadable alerts are listed in the
+  problems banner.
+* What was done stays done when an incident grows. After `act` locks an
+  account, the lock's own log lines (aegis-exec logging in from the laptop,
+  sudo running the gate) join the incident and give it a new id. The new
+  version shows the action as done, with its proof and the earlier id; the
+  approval is shown as given for the earlier version and does not count
+  for the new evidence.
+
+Written and tested against a local stand-in for the manager; not yet run
+against the real one.
+
+## D39 - Milestone 6 result: the live feed on the real lab (2026-11-18)
+`setup-manager.sh` set up the manager; the feed key, asked to run
+`cat /etc/shadow`, got only "refused". `watch` started "from now" at byte
+3,644,452 of the day's alerts.json, and the D34 attack was run again: six
+wrong passwords for svc_backup from the laptop, the right one, then
+`sudo cat /etc/shadow`.
+
+* The alerts arrived as it happened: 48 alerts, 48 events, no gaps, nothing
+  unreadable. The incident grew through 15 versions (a new id each time,
+  D12): risk 45 (medium) after the guessing, 85 (critical) once the login
+  succeeded and the shadow file was read - rule level 10, password guessed
+  35, became admin 15, credential access 25. D34 scored 100 because the lab
+  setup (creating svc_backup) fell in the same window and added 15 for "a
+  new account"; this run held only the attack.
+* Lock svc_backup needed approval; block 192.168.56.1 was denied (the laptop).
+  Approved for inc-54dedd31, then `act`: before `password=P
+  account_expires=never processes=0` (the attacker had already logged out),
+  after `password=L account_expires=Jan_02,_1970 processes=0`. The audit log
+  in runs\live: 3 entries, chain intact, last hash 159aef78...67d4f9.
+* As expected, the lock's own log lines joined the incident (27 -> 46
+  events, now inc-9436b267). The dashboard shows the lock there as done, with
+  the proof and approval of the earlier version (D38). 68 alerts by the end,
+  still no gaps.
+
+Milestone 6 is done.

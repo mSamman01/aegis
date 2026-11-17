@@ -1,0 +1,271 @@
+#!/usr/bin/python3 -I
+"""aegis-feed - the only program Aegis can run on the Wazuh manager. It only reads.
+
+Aegis connects over SSH as the account aegis-feed. Its key is restricted to
+this one command (see setup-manager.sh), and sudo lets aegis-feed run this
+script, with no arguments, as the owner of Wazuh's alert files - not as root -
+and nothing else. The request arrives in SSH_ORIGINAL_COMMAND and must be:
+
+    follow now                  start at the end of today's alerts
+    follow start                start at the beginning of today's alerts
+    follow <file id> <offset>   carry on exactly where the last session stopped
+
+It then streams /var/ossec/logs/alerts/alerts.json as Wazuh writes it, one
+alert per line, byte for byte. Lines starting with "#AEGIS-FEED " are this
+program's own messages, as JSON with a "type":
+
+    hello      where the stream starts
+    cursor     everything before this point has been sent: (file id, offset)
+    idle       caught up; nothing new yet
+    heartbeat  still here (every 30 s while idle)
+    rotated    the old file is finished; carrying on with the new one
+    gap        something could not be read, and what may be missing because of it
+    refused    the request was not one of the above
+    error      something went wrong; the stream ends
+
+A file is known by a hash of its first line, not by its name: Wazuh starts a
+new alerts.json every day and archives the old one. When that happens the rest
+of the old file is read from the archive before the new one is started, and if
+it cannot be found the stream says so. It never skips anything silently.
+
+Written for Python 3.6 and newer, standard library only.
+"""
+
+import glob
+import gzip
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+
+ROOT = "/var/ossec/logs/alerts"
+CURRENT = "alerts.json"
+CHUNK = 1 << 20  # at most about this many bytes per batch
+POLL = 1.0  # seconds between looks at the file while idle
+HEARTBEAT = 30.0  # seconds between heartbeats while idle
+ARCHIVE_PATIENCE = 120.0  # how long to look for an archived file before reporting a gap
+RECENT_ARCHIVES = 8  # how many of the newest archive files are searched
+MAX_FIRST_LINE = 16 << 20
+MARK = b"#AEGIS-FEED "
+REQUEST = re.compile(r"^follow (now|start|([0-9a-f]{16}) (0|[1-9][0-9]{0,14}))$")
+USAGE = "expected: follow now | follow start | follow <file id> <offset>"
+
+
+def _open(path):
+    return gzip.open(path, "rb") if path.endswith(".gz") else open(path, "rb")
+
+
+def identify(path, tolerant=False):
+    """The file's id - a hash of its first line - or None if it has no complete line yet.
+
+    A missing file has no id. Any other error is raised, unless ``tolerant``
+    (archives can be half written while Wazuh compresses them).
+    """
+    try:
+        with _open(path) as handle:
+            line = handle.readline(MAX_FIRST_LINE)
+    except FileNotFoundError:
+        return None
+    except (OSError, EOFError):
+        if tolerant:
+            return None
+        raise
+    if not line.endswith(b"\n"):
+        return None
+    return hashlib.sha256(line).hexdigest()[:16]
+
+
+def read_lines(path, offset, limit=CHUNK):
+    """Complete lines from ``offset`` on, about ``limit`` bytes at most.
+
+    Returns ``(data, new offset, beyond)``; ``beyond`` is True when the file
+    is shorter than ``offset``.
+    """
+    with _open(path) as handle:
+        if not path.endswith(".gz") and os.fstat(handle.fileno()).st_size < offset:
+            return b"", offset, True
+        handle.seek(offset)
+        if handle.tell() != offset:  # a gzip file ends before offset
+            return b"", offset, True
+        data = handle.read(limit)
+        cut = data.rfind(b"\n")
+        if cut < 0:
+            if len(data) < limit:
+                return b"", offset, False  # only a line Wazuh is still writing
+            data += handle.readline()  # one alert longer than the limit
+            if not data.endswith(b"\n"):
+                return b"", offset, False
+            return data, offset + len(data), False
+        data = data[:cut + 1]
+        return data, offset + len(data), False
+
+
+def end_of_lines(path):
+    """The offset just after the last complete line."""
+    try:
+        handle = open(path, "rb")
+    except FileNotFoundError:
+        return 0
+    with handle:
+        position = os.fstat(handle.fileno()).st_size
+        while position > 0:
+            step = min(65536, position)
+            handle.seek(position - step)
+            cut = handle.read(step).rfind(b"\n")
+            if cut >= 0:
+                return position - step + cut + 1
+            position -= step
+    return 0
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def find_archive(root, file_id):
+    """The archived alerts file whose first line has this id, if Wazuh still keeps it."""
+    pattern = os.path.join(root, "*", "*", "ossec-alerts-*")
+    candidates = [p for p in glob.glob(pattern) if p.endswith((".json", ".json.gz"))]
+    candidates.sort(key=_mtime, reverse=True)
+    for path in candidates[:RECENT_ARCHIVES]:
+        if identify(path, tolerant=True) == file_id:
+            return path
+    return None
+
+
+def _log(message):
+    try:
+        import syslog
+        syslog.openlog("aegis-feed")
+        syslog.syslog(syslog.LOG_INFO, message)
+    except Exception:  # no syslog (e.g. in tests on Windows): nothing to log to
+        pass
+
+
+class Stream:
+    def __init__(self, out, root=ROOT, sleep=time.sleep, clock=time.monotonic):
+        self.out = out
+        self.root = root
+        self.sleep = sleep
+        self.clock = clock
+        self.last_emit = clock()
+
+    def emit(self, kind, **fields):
+        fields["type"] = kind
+        self.out.write(MARK + json.dumps(fields, sort_keys=True).encode("ascii") + b"\n")
+        self.out.flush()
+        self.last_emit = self.clock()
+
+    def send(self, data, file_id, offset):
+        self.out.write(data)
+        self.emit("cursor", file_id=file_id, offset=offset)
+
+    def run(self, request, max_polls=None):
+        match = REQUEST.match(request)
+        if not match:
+            self.emit("refused", reason=USAGE)
+            _log("refused a request that is not a follow request")
+            return 2
+        current = os.path.join(self.root, CURRENT)
+        mode = match.group(1)
+        if mode == "now":
+            file_id = identify(current)
+            offset = end_of_lines(current) if file_id else 0
+        elif mode == "start":
+            file_id, offset = identify(current), 0
+        else:
+            file_id, offset = match.group(2), int(match.group(3))
+            mode = "cursor"
+        self.emit("hello", version=1, start=mode, file_id=file_id, offset=offset)
+        _log("streaming alerts from %s (file %s, offset %d)" % (mode, file_id, offset))
+
+        polls = 0
+        idle_announced = False
+        missing_since = None
+        while max_polls is None or polls < max_polls:
+            polls += 1
+            moved = False
+            current_id = identify(current)
+            if file_id is None:
+                file_id, offset = current_id, 0  # nothing read yet: take the file that is there now
+            if file_id is not None and file_id == current_id:
+                missing_since = None
+                if os.path.getsize(current) < offset:
+                    self.emit("gap", file_id=file_id, offset=offset,
+                              reason="alerts.json is now shorter than the point already read (it was truncated "
+                                     "or replaced); starting again at its beginning")
+                    offset = 0
+                data, new_offset, _ = read_lines(current, offset)
+                if data:
+                    offset = new_offset
+                    self.send(data, file_id, offset)
+                    moved = True
+            elif file_id is not None:
+                # The file this stream was reading is no longer alerts.json: finish it from the archive.
+                path = find_archive(self.root, file_id)
+                if path is not None:
+                    missing_since = None
+                    data, new_offset, beyond = read_lines(path, offset)
+                    if data:
+                        offset = new_offset
+                        self.send(data, file_id, offset)
+                    else:
+                        if beyond:
+                            self.emit("gap", file_id=file_id, offset=offset,
+                                      reason="the archived file is shorter than the point already read")
+                        self.emit("rotated", previous=file_id, archive=os.path.basename(path), file_id=current_id)
+                        file_id, offset = current_id, 0
+                    moved = True
+                elif missing_since is None:
+                    missing_since = self.clock()
+                elif self.clock() - missing_since >= ARCHIVE_PATIENCE:
+                    self.emit("gap", file_id=file_id, offset=offset,
+                              reason="the previous alerts file was not found among Wazuh's archives; alerts "
+                                     "written to it after this offset may be missing")
+                    _log("gap: previous alerts file %s not found in the archive" % file_id)
+                    file_id, offset, missing_since = current_id, 0, None
+                    moved = True
+            if moved:
+                idle_announced = False
+                continue
+            if not idle_announced:
+                self.emit("idle", file_id=file_id, offset=offset)
+                idle_announced = True
+            elif self.clock() - self.last_emit >= HEARTBEAT:
+                self.emit("heartbeat", file_id=file_id, offset=offset,
+                          time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            self.sleep(POLL)
+        return 0
+
+
+def main(argv=None, environ=None, out=None, root=ROOT):
+    argv = sys.argv[1:] if argv is None else argv
+    environ = os.environ if environ is None else environ
+    out = sys.stdout.buffer if out is None else out
+    stream = Stream(out, root)
+    if argv:  # sudo allows no arguments; this is a second check
+        stream.emit("refused", reason="aegis-feed takes no arguments; the request comes from SSH")
+        return 2
+    try:
+        return stream.run(environ.get("SSH_ORIGINAL_COMMAND", "").strip())
+    except BrokenPipeError:  # Aegis disconnected
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        try:
+            stream.emit("error", reason="%s: %s" % (type(exc).__name__, str(exc)[:300]))
+        except Exception:
+            pass
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
