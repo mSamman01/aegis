@@ -1,0 +1,10 @@
+{
+  "_about": "What each incident in the synthetic sample really is. The sample tells two attack stories: an SSH brute force on aegis-victim, and PowerShell activity on win-laptop.",
+  "inc-e38789075bf7616d": "attack",
+  "inc-dd29f3ede71f6a05": "attack",
+  "inc-b592b631a8caf37b": "benign",
+  "inc-fe7db2d265593cb6": "attack",
+  "inc-a80e962c5e2c06b2": "attack",
+  "inc-915717ba1999406d": "benign",
+  "inc-d8a1d3d3415218b4": "attack"
+}

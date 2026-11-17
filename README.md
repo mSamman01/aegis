@@ -1,0 +1,186 @@
+# Aegis
+
+An evidence-driven agentic investigation and controlled response system for
+security operations.
+
+**The idea:** a read-only AI investigator looks at the evidence and proposes;
+deterministic code scores the risk and decides; a human approves anything that
+changes a system. Every claim the AI makes has to point at evidence that
+exists, and every step is written to a tamper-evident audit log.
+
+Aegis sits on top of a Wazuh homelab and runs a local model through Ollama. It
+is inspired by [SENTINEL](https://github.com/CS-Abuhelal/sentinel) and written
+from scratch. The design and roadmap are in [docs/PLAN.md](docs/PLAN.md); the
+reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
+
+## Status
+
+| # | Milestone | State |
+|---|-----------|-------|
+| 1 | Event contract + Wazuh ingest | done |
+| 2 | Correlation: events -> incidents | done |
+| 3 | Evidence tools + AI investigator (Ollama) | done |
+| 4 | Risk score + policy engine | done |
+| 5 | Lab target, controlled actions, audit log | done |
+| 6 | Live feed from Wazuh, API, dashboard | planned |
+| 7 | Evaluation on labelled cases | planned |
+
+## Try it
+
+Needs Python 3.10 or newer, and Ollama with a model for the `investigate` step
+(`ollama pull qwen3:4b`). No Python packages to install: everything so far uses
+only the standard library. Run these from the project folder.
+
+```powershell
+python -m aegis doctor
+python -m aegis ingest data\samples\wazuh_alerts_sample.jsonl
+python -m aegis correlate
+python -m aegis show <incident id>
+python -m aegis investigate <incident id>
+python -m aegis decide <incident id>
+python -m unittest
+```
+
+* `doctor` checks Python and lists the models your local Ollama has.
+* `ingest` turns Wazuh alerts into normalized events, writes them to
+  `runs\events.jsonl` and prints a summary.
+* `correlate` groups those events into incidents, writes them to
+  `runs\incidents.jsonl` and lists the serious ones. `--min-level 0` lists
+  all of them; `--window 10` joins only events within 10 minutes.
+* `show` prints one incident: its rules, its timeline, and for every event the
+  reason it is in the incident. The first few characters of the id are enough.
+* `investigate` gives one incident's evidence to the local model and prints a
+  checked verdict: findings with their citations, proposed actions, and
+  anything the checker removed. Useful options: `--show-prompt` prints exactly
+  what the model is given and stops; `--all` investigates every incident at
+  level 7 or above; `--replay` reuses the recorded answer without the model;
+  `--think` lets the model reason first; `--model qwen3:8b` picks another model.
+* `investigate --all --repeat 3` asks each question three times. A small model
+  does not always give the same answer twice, and that is worth knowing.
+* `compare` lines up the saved verdicts by model setup. With `--expect benign`
+  or a labels file (`{"inc-...": "attack"}`) it scores them: false alarms on
+  benign incidents, attacks caught and missed, and how often the model changed
+  its mind.
+* `decide` scores an incident's risk from its evidence (0-100, every point
+  with its reason and its events) and runs each candidate action - suggested
+  by the risk rules or proposed by the model - through `policy/policy.json`:
+  allow, needs approval, or deny, with the reasons. `--all` decides every
+  incident; `--no-model` ignores the saved verdicts. Nothing is executed.
+* `approve <id> --action lock_account --target svc_backup --by <name>` records a
+  human's sign-off for one action on one incident, in
+  `runs\approvals\<incident id>.json`. Only an action the policy marks
+  "needs approval" can be approved.
+* `act <id>` decides the incident again from scratch, runs the approved
+  actions on the lab VM through `aegis-gate`, and prints the account's status
+  before and after. `--dry-run` shows what would run.
+* `audit` checks the audit log's hash chain and shows its last entries.
+  `decide`, `approve` and `act` all write to it, and `act` refuses to run
+  anything if the chain is broken.
+* `unittest` runs the test suite. It never needs the model.
+
+### The lab VM
+
+`lab/` holds the two files for the lab VM. `aegis-gate` is the only program
+Aegis can run there: `status`, `lock` or `unlock` of one user, refusing
+protected and system accounts on its own. `setup-lab.sh` installs it, creates
+the `aegis-exec` account Aegis connects as (key login only, from the laptop
+only, able to run the gate and nothing else) and the `svc_backup` account the
+lab attack guesses.
+
+### The policy
+
+`policy/policy.json` says where Aegis may act and how:
+
+* `hosts` - each agent id with its name and mode. `advice` denies every
+  action; `lab` may act. A host that is not listed, or whose name does not
+  match, is advice-only.
+* `protected_accounts`, `protected_addresses`, `protected_paths` - never
+  acted on, whatever the risk or the approval.
+* `actions` - for each action in the catalog: switched on or off, the lowest
+  risk band it needs, and whether a human must approve it.
+
+Locking an account and isolating a host always need a human; the code
+refuses a policy that says otherwise. The risk score never uses the model's
+verdict or the operator notes.
+
+### Operator notes
+
+`knowledge/notes.json` holds what you know about your own machines and the
+model cannot: for example, that a certain program is your monitoring agent.
+Each note says when it applies, as patterns on an event's fields:
+
+```json
+{"id": "wazuh-agent-checks",
+ "note": "The Wazuh security agent ... starts PowerShell, secedit, net ...",
+ "applies_when": {"started_by": "\\\\ossec-agent\\\\wazuh-agent\\.exe$"}}
+```
+
+Code, not the model, decides when a note is shown: only for incidents with an
+event that matches, and together with the events it matched. Every verdict
+records whether notes were in use and which ones it was shown, and `compare`
+marks those runs `+notes`. `investigate --no-knowledge` runs without any, so
+you can always see what the notes are contributing.
+
+Every command works inside a run folder, `runs` by default. Add `--dir` to keep
+another data set beside it, for example the synthetic sample:
+
+```powershell
+python -m aegis ingest data\samples\wazuh_alerts_sample.jsonl --dir runs\sample
+python -m aegis correlate --dir runs\sample
+python -m aegis investigate --all --dir runs\sample
+python -m aegis compare --dir runs\sample --labels data\samples\labels_sample.json
+```
+
+## Use your own Wazuh alerts
+
+On the Wazuh server, copy the latest alerts to a file you can read:
+
+```bash
+sudo tail -n 5000 /var/ossec/logs/alerts/alerts.json > /tmp/alerts_export.json
+```
+
+On the laptop, fetch it into `data\` (which git ignores) and ingest it:
+
+```powershell
+scp <vm-user>@<vm-ip>:/tmp/alerts_export.json data\alerts_export.json
+python -m aegis ingest data\alerts_export.json
+```
+
+`ingest` also accepts a JSON array or a Wazuh indexer search response. Add
+`--min-level 7` to keep only the more serious alerts. Alerts that cannot be
+read are listed with their line number and the reason; nothing is dropped
+silently.
+
+## Layout
+
+```
+aegis/
+  contracts/   the Event, Incident, Verdict and Decision shapes
+  ingest/      Wazuh alerts -> Events
+  correlate.py Events -> Incidents
+  evidence.py  read-only lookups, and the evidence pack shown to the model
+  llm.py       the Ollama client (text in, text out; no tools)
+  knowledge.py operator notes, attached by code where they apply
+  risk.py      the risk score: fixed rules over the evidence
+  policy.py    the policy engine: allow / needs approval / deny
+  decide.py    risk + policy -> one decision per incident
+  approvals.py a human's sign-off, one file per incident
+  execute.py   carries out an approved action on the lab VM, with proof
+  audit.py     the hash-chained audit log
+  investigate.py  asks the model once, then checks its answer
+  compare.py   lines up and scores saved verdicts
+  store.py     read / write events, incidents and verdicts as JSON lines
+  doctor.py    environment checks
+  cli.py       the command line
+data/samples/  synthetic Wazuh-shaped alerts (safe to publish)
+knowledge/     operator notes about this environment
+policy/        what Aegis may do, and where
+lab/           the gate and setup script for the lab VM
+docs/PLAN.md   architecture and roadmap
+tests/         unit tests
+runs/          pipeline output (ignored by git)
+```
+
+The sample alerts are synthetic. They are shaped like Wazuh 4.x alerts and tell
+one small story (an SSH brute force on a lab machine, plus some activity on a
+Windows laptop), but the hosts, users, hashes and the CVE are made up.

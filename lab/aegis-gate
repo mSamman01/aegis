@@ -1,0 +1,68 @@
+#!/bin/bash
+# aegis-gate - the only program Aegis can run on the lab VM.
+#
+# Aegis connects over SSH as the user aegis-exec. Its key is restricted to
+# this one command (see setup-lab.sh), and sudo lets aegis-exec run this
+# script as root and nothing else. The request arrives in
+# SSH_ORIGINAL_COMMAND and must be exactly:
+#
+#     status <user>     report whether the account can log in
+#     lock <user>       lock the password, expire the account, end its processes
+#     unlock <user>     undo a lock (to reset the lab between runs)
+#
+# This script checks the request again, on the target, whatever Aegis
+# decided: protected and system accounts are refused here too.
+# Every request is logged to /var/log/aegis-gate.log.
+
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+PROTECTED="root labadmin wazuh aegis-exec"
+LOG=/var/log/aegis-gate.log
+REQUEST="${SSH_ORIGINAL_COMMAND:-}"
+
+log()  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
+deny() { log "DENIED request='${REQUEST//[^[:print:]]/?}' reason=$1"; printf 'DENIED %s\n' "$1"; exit 2; }
+
+read -r -a parts <<< "$REQUEST" || true
+[[ ${#parts[@]} -eq 2 ]] || deny "expected: status|lock|unlock <user>"
+verb="${parts[0]}"
+user="${parts[1]}"
+
+[[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || deny "not a valid user name"
+for protected in $PROTECTED; do
+    [[ "$user" == "$protected" ]] && deny "$user is a protected account"
+done
+entry="$(getent passwd "$user")" || deny "no such user: $user"
+uid="$(cut -d: -f3 <<< "$entry")"
+(( uid >= 1000 )) || deny "$user is a system account (uid $uid)"
+
+status() {
+    local password expires processes
+    password="$(passwd -S "$user" | awk '{print $2}')"
+    expires="$(chage -l "$user" | awk -F': ' '/^Account expires/ {print $2}')"
+    processes="$(pgrep -c -u "$user" || true)"
+    printf 'user=%s password=%s account_expires=%s processes=%s\n' \
+        "$user" "$password" "${expires// /_}" "${processes:-0}"
+}
+
+case "$verb" in
+    status)
+        status
+        ;;
+    lock)
+        usermod -L -e 1 "$user"        # lock the password and expire the account
+        pkill -KILL -u "$user" || true  # end anything already running as the user
+        log "LOCKED user=$user"
+        status
+        ;;
+    unlock)
+        usermod -U -e "" "$user"
+        log "UNLOCKED user=$user"
+        status
+        ;;
+    *)
+        deny "unknown action: $verb"
+        ;;
+esac

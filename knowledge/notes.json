@@ -1,0 +1,32 @@
+[
+  {
+    "id": "wazuh-agent-checks",
+    "note": "The Wazuh security agent is installed on this machine. It regularly checks the machine's configuration by starting PowerShell, secedit, net and similar tools as SYSTEM, and those in turn create and delete temporary files. A process started directly by wazuh-agent.exe is the monitoring tool doing its job.",
+    "applies_when": {
+      "started_by": "\\\\ossec-agent\\\\wazuh-agent\\.exe$"
+    }
+  },
+  {
+    "id": "powershell-policy-test-file",
+    "note": "Every program that starts the PowerShell engine (powershell.exe, or an application that hosts PowerShell) first writes a small file named __PSScriptPolicyTest_<random>.ps1 to a temporary folder to test the script execution policy, and deletes it straight away. This file on its own is normal. It does not say whether the program that wrote it is harmless: judge that program separately.",
+    "applies_when": {
+      "file": "\\\\(AppData\\\\Local\\\\Temp|Windows\\\\SystemTemp|Windows\\\\Temp)\\\\__PSScriptPolicyTest_[a-z0-9]{8}\\.[a-z0-9]{3}\\.ps1$"
+    }
+  },
+  {
+    "id": "background-task-host",
+    "note": "C:\\Windows\\System32\\backgroundTaskHost.exe started with -ServerName:<app id> is the Windows host for the background tasks of installed Store apps, run as the signed-in user. The Wazuh rules named 'Suspicious Process - taskhost.exe' match it by its name. From that folder and with that kind of command line it is normal.",
+    "applies_when": {
+      "program": "^C:\\\\Windows\\\\System32\\\\backgroundTaskHost\\.exe$",
+      "command_line": " -ServerName:[A-Za-z0-9_.]+$"
+    }
+  },
+  {
+    "id": "com-surrogate",
+    "note": "dllhost.exe from C:\\Windows\\System32 or C:\\Windows\\SysWOW64 started with /Processid:{GUID} is the COM surrogate: the normal way Windows runs a COM component (thumbnails, shell extensions and similar) in a separate process. The GUID names the component. The Wazuh rules named 'Suspicious Process - dllhost.exe' match it by its name. From those folders and with that kind of command line it is normal.",
+    "applies_when": {
+      "program": "^C:\\\\Windows\\\\(System32|SysWOW64)\\\\dllhost\\.exe$",
+      "command_line": " /Processid:\\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\\}$"
+    }
+  }
+]

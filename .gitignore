@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Pipeline output
+runs/*
+!runs/.gitkeep
+
+# Real alert exports describe a real machine: never commit them.
+# Only the synthetic samples are tracked.
+data/*
+!data/samples/
+
+.env

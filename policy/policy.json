@@ -1,0 +1,19 @@
+{
+  "_about": "What Aegis may do, and where. Read by 'python -m aegis decide' and 'act'. Hosts not listed here are advice-only.",
+  "default_mode": "advice",
+  "hosts": {
+    "001": {"name": "LenovoMSamman", "mode": "advice", "_why": "the real laptop: Aegis only gives advice here"},
+    "002": {"name": "aegis-victim", "mode": "lab", "address": "192.168.56.107", "_why": "the disposable lab VM"}
+  },
+  "executor": {"ssh_user": "aegis-exec", "ssh_key": "~/.ssh/aegis_lab"},
+  "protected_accounts": ["root", "administrator", "labadmin", "wazuh", "aegis-exec"],
+  "protected_addresses": ["127.0.0.1", "192.168.56.1", "192.168.56.105"],
+  "protected_paths": ["C:\\Windows\\", "C:\\Program Files\\", "C:\\Program Files (x86)\\", "/bin/", "/sbin/", "/usr/", "/etc/", "/lib/", "/boot/", "/var/ossec/"],
+  "actions": {
+    "lock_account":    {"enabled": true,  "min_band": "high",     "approval": true},
+    "block_ip":        {"enabled": true,  "min_band": "medium",   "approval": true},
+    "kill_process":    {"enabled": true,  "min_band": "high",     "approval": true},
+    "quarantine_file": {"enabled": true,  "min_band": "medium",   "approval": true},
+    "isolate_host":    {"enabled": false, "min_band": "critical", "approval": true}
+  }
+}

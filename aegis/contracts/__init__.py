@@ -1,0 +1,68 @@
+"""Contracts: the shared data shapes every Aegis stage agrees on."""
+
+from aegis.contracts.event import (
+    SCHEMA_VERSION,
+    Category,
+    ContractError,
+    Event,
+    Host,
+    Mitre,
+    Network,
+    Outcome,
+    Process,
+    Rule,
+    format_ts,
+    parse_ts,
+)
+from aegis.contracts.incident import (
+    INCIDENT_SCHEMA_VERSION,
+    Incident,
+    Link,
+    LinkReason,
+    RuleCount,
+    incident_id_for,
+)
+
+from aegis.contracts.verdict import (
+    ACTION_CATALOG,
+    VERDICT_SCHEMA_VERSION,
+    Confidence,
+    Finding,
+    ModelRun,
+    ProposedAction,
+    Reasoning,
+    Rejection,
+    Verdict,
+    VerdictLabel,
+)
+
+__all__ = [
+    "ACTION_CATALOG",
+    "VERDICT_SCHEMA_VERSION",
+    "Confidence",
+    "Finding",
+    "ModelRun",
+    "ProposedAction",
+    "Reasoning",
+    "Rejection",
+    "Verdict",
+    "VerdictLabel",
+    "INCIDENT_SCHEMA_VERSION",
+    "Incident",
+    "Link",
+    "LinkReason",
+    "RuleCount",
+    "incident_id_for",
+    "SCHEMA_VERSION",
+    "Category",
+    "ContractError",
+    "Event",
+    "Host",
+    "Mitre",
+    "Network",
+    "Outcome",
+    "Process",
+    "Rule",
+    "format_ts",
+    "parse_ts",
+]
