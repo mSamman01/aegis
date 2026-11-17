@@ -22,14 +22,15 @@ reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
 | 3 | Evidence tools + AI investigator (Ollama) | done |
 | 4 | Risk score + policy engine | done |
 | 5 | Lab target, controlled actions, audit log | done |
-| 6 | Live feed from Wazuh, API, dashboard | planned |
+| 6 | Read-only dashboard and API; live feed from Wazuh | dashboard done, live feed next |
 | 7 | Evaluation on labelled cases | planned |
 
 ## Try it
 
 Needs Python 3.10 or newer, and Ollama with a model for the `investigate` step
 (`ollama pull qwen3:4b`). No Python packages to install: everything so far uses
-only the standard library. Run these from the project folder.
+only the standard library, the dashboard included. Run these from the project
+folder.
 
 ```powershell
 python -m aegis doctor
@@ -38,6 +39,7 @@ python -m aegis correlate
 python -m aegis show <incident id>
 python -m aegis investigate <incident id>
 python -m aegis decide <incident id>
+python -m aegis serve --dir runs\lab
 python -m unittest
 ```
 
@@ -76,6 +78,15 @@ python -m unittest
 * `audit` checks the audit log's hash chain and shows its last entries.
   `decide`, `approve` and `act` all write to it, and `act` refuses to run
   anything if the chain is broken.
+* `serve` opens a read-only dashboard at http://127.0.0.1:8765/ for one run
+  folder: the incidents, most dangerous first, and each one stage by stage -
+  what Wazuh reported, why the events were joined, the AI's verdict (boxed and
+  marked AI-written), the risk score and policy decision worked out again now,
+  and the approvals and actions with their before/after proof. It listens on
+  this computer only, answers GET only, writes nothing, runs no JavaScript,
+  and has no approve or act button: those stay on the command line. The same
+  data is at `/api/overview`, `/api/incident/<id>`, `/api/event/<id>` and
+  `/api/audit` as JSON. `--port` picks another port.
 * `unittest` runs the test suite. It never needs the model.
 
 ### The lab VM
@@ -167,6 +178,9 @@ aegis/
   approvals.py a human's sign-off, one file per incident
   execute.py   carries out an approved action on the lab VM, with proof
   audit.py     the hash-chained audit log
+  snapshot.py  read-only view of a run folder for the dashboard; decides afresh
+  server.py    the dashboard and API: 127.0.0.1 only, GET only
+  web/         the pages (escaped by default, no JavaScript) and the stylesheet
   investigate.py  asks the model once, then checks its answer
   compare.py   lines up and scores saved verdicts
   store.py     read / write events, incidents and verdicts as JSON lines

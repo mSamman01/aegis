@@ -174,9 +174,16 @@ def main(argv: list[str] | None = None) -> int:
     aud.add_argument("--last", type=int, default=10, help="how many entries to show (default: 10)")
     aud.add_argument("--dir", type=Path, default=RUN_DIR, help=DIR_HELP)
 
+    srv = commands.add_parser("serve", help="read-only dashboard on http://127.0.0.1 (cannot approve or act)")
+    srv.add_argument("--dir", type=Path, default=RUN_DIR, help=DIR_HELP)
+    srv.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
+    srv.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor()
+    if args.command == "serve":
+        return _serve(args)
     run_dir: Path = args.dir
     if args.command == "decide":
         return _decide(args)
@@ -538,6 +545,44 @@ def _decision_record(decision) -> dict:
         "model_label": decision.model_label,
         "actions": [[a.action, a.target, a.outcome.value] for a in decision.actions],
     }
+
+
+def _serve(args: argparse.Namespace) -> int:
+    from aegis import server  # only this command needs the web server
+
+    if not args.dir.is_dir():
+        print(f"error: no run folder {args.dir}", file=sys.stderr)
+        return 2
+    if not 0 <= args.port <= 65535:
+        print("error: --port must be between 1 and 65535", file=sys.stderr)
+        return 2
+    try:
+        httpd = server.make_server(args.dir, args.port, args.policy)
+    except OSError as exc:
+        print(f"error: cannot listen on 127.0.0.1:{args.port} ({exc}). Is a dashboard already running? "
+              f"Try --port {args.port + 1}.", file=sys.stderr)
+        return 2
+    snap = httpd.view.current()
+    state = snap.audit_state
+    port = httpd.server_address[1]
+    lines = [
+        f"Dashboard http://127.0.0.1:{port}/   (read-only: GET only, from this computer only)",
+        f"Run folder {args.dir}   {len(snap.incidents)} incidents, {len(snap.events)} events, "
+        f"{len(snap.verdicts)} verdicts",
+        f"Policy    {snap.policy.id if snap.policy else 'NOT READ'}   every decision is worked out again from it, "
+        "as act does",
+        f"Audit log {state.entries} entries, " + ("chain intact" if state.ok else f"BROKEN: {state.problem}"),
+    ]
+    lines += [f"Note      {problem}" for problem in snap.problems]
+    lines.append("Approving and acting stay on the command line. Press Ctrl+C to stop.")
+    print("\n".join(_ascii(line) for line in lines), flush=True)
+    try:
+        httpd.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        print("Stopped.")
+    finally:
+        httpd.server_close()
+    return 0
 
 
 def _fresh_decision(args: argparse.Namespace):

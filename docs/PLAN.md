@@ -137,8 +137,17 @@ fixed: the Wazuh agent's journal reader lost the successful login (D32), and
 the risk rule paired the guessing with the administrator's own login (D33).
 
 **6. Live feed + API + dashboard.**
-Wazuh forwards alerts to Aegis as they fire; a read-only API and a dashboard
-show each incident stage by stage, with AI-written content clearly marked.
+Part 1, read-only dashboard and API - done. `python -m aegis serve --dir
+runs\lab` shows each incident stage by stage on http://127.0.0.1:8765/:
+ingest, correlation, the AI's verdict (boxed, marked AI-written), the risk
+score and policy decision worked out again from the current policy, and the
+approvals and actions with before/after proof from the verified audit log.
+127.0.0.1 only, GET only, Host header checked, writes nothing (not even the
+audit log), no JavaScript, Content-Security-Policy `default-src 'none'`,
+invisible characters in evidence shown as codes (D35, D36). Every page of
+the three run folders answered and left their files unchanged.
+Part 2, live feed - next: Aegis pulls new alerts from the manager over a
+restricted channel, so Aegis itself exposes no write endpoint.
 
 **7. Evaluation.**
 Labelled cases including benign twins of each attack. Report accuracy, false

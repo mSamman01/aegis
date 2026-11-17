@@ -456,3 +456,63 @@ Where the model fits: this incident was never shown to the model. Score,
 suggestion, policy decision and execution are all code; the model's job is
 to explain incidents to the human who approves, and nothing it writes can
 change what happens.
+
+## D35 - The dashboard is read-only by construction (2026-11-17)
+`python -m aegis serve --dir runs\lab` shows a run folder in a browser, and
+nothing about it can change anything:
+
+* It listens on 127.0.0.1 only, and there is no option to change that. It
+  answers GET and nothing else (405 for every other method). Nothing it calls
+  writes a file - not even the audit log, so looking at an incident leaves no
+  trace in the evidence. A test opens every page and checks that every file
+  in the run folder and the policy is byte for byte unchanged.
+* There is no approve or act button and no endpoint that could act. Those
+  stay on the command line, where a human types them; a web page that can act
+  would be far more to defend than a command.
+* Every decision is worked out again from the events and the current policy,
+  the way `act` does (D30); `decisions.jsonl` is never read. An approval shows
+  whether it still counts under the current policy. An action counts as done
+  only from verified audit entries: after a break in the chain, nothing
+  counts as proof.
+* The model's verdict has its own stage, boxed and marked AI-written. In the
+  API it sits under `investigate` with `ai_written: true`, and where the model
+  proposed an action the decision says "suggested by the AI model".
+* The Host header must be `127.0.0.1:<port>` or `localhost:<port>`. Without
+  that check a web page elsewhere could point its own domain name at
+  127.0.0.1 (DNS rebinding) and read real alert data through the browser. On
+  Windows the server does not set SO_REUSEADDR, which there would let another
+  program bind the same port and take the traffic.
+* The files are read again when one of them changes (size or modification
+  time), so a `decide`, `approve` or `act` in another window shows on the next
+  load. The incidents page can reload itself every 10 or 30 seconds; that is
+  an HTML meta refresh, not a script.
+
+Checked on the lab run: 96 incidents; inc-f532 critical (100), lock
+svc_backup done with its before/after proof, block 192.168.56.1 denied;
+audit log 289 entries ending 71f4f0e6. All 2,472 pages of runs\lab, runs and
+runs\sample answered, and none of their files changed.
+
+## D36 - Hostile evidence on a web page (2026-11-17)
+Evidence is text an attacker may have written (D16). In a browser that risk
+becomes script injection, so:
+
+* The pages have no JavaScript at all. They are built on the server by one
+  function that escapes every piece of text it is given; tag and attribute
+  names come from fixed lists in the code, and links can only point to this
+  server. The Content-Security-Policy is `default-src 'none'` with only the
+  stylesheet allowed, so even markup that slipped through could not run a
+  script, load an image or send a form.
+* The API writes <, > and & in JSON as \u escapes and is served as
+  application/json with nosniff, so it can never be read as a page. It keeps
+  the evidence exact.
+* Invisible characters are shown, not hidden. A right-to-left override makes
+  `invoice<RLO>gpj.exe` read as `invoiceexe.jpg`; zero-width characters split
+  words; Unicode tag characters can spell an instruction a human cannot see
+  but a model reads. On the page each one appears as a red code such as
+  ‮.
+* A command offered for copying (`approve ...`) is shown only if every value
+  in it is safe to paste into a shell. An account name from the evidence such
+  as `bob; Remove-Item ...` gets "type the command yourself" instead.
+* The tests found one hole before it shipped: the link check accepted
+  `//evil.example/`, which a browser reads as another site. A link may no
+  longer start with two slashes.
