@@ -884,3 +884,71 @@ Agent2 makes both mistakes impossible instead of explaining them better:
 
 The mode is now `agent2`. The agent1 answer stays in runs\sample as a
 record; an agent1 recording cannot be replayed as agent2.
+
+## D46 - Agent mode measured: it does not beat the single call (2026-11-18)
+qwen3:4b, instructions v4, notes 8ec64c, three runs per incident: agent2
+against the single call on the 41 incidents both answered (28 real, 13
+synthetic), from `evaluate --investigate --agent`:
+
+| | single call | agent2 |
+|---|---|---|
+| real attacks caught | 6 of 6 runs | 6 of 6 |
+| real benign called suspicious or malicious | 17 of 78 (22%) | 31 of 78 (40%) |
+| sample attacks caught | 15 of 18 | 15 of 18 |
+| benign twins flagged | 12 of 18 (67%) | 15 of 18 (83%) |
+| proposals removed by the checker / denied by the policy / to a human | 12 / 24 / 12 | 21 / 18 / 14 |
+| findings removed (cited evidence not opened) | 0 | 4 |
+| seconds per run, real / synthetic | 7.3 / 8.1 | 18.3 / 19.5 |
+
+* It reads; it does not choose. It opened every event in 117 of 123 runs,
+  and in 36 of 41 incidents it opened them in outline order (E1, E2, ...)
+  before anything else - 4.2 to 4.7 tools a run. It never made a choice
+  that was not on the list: the 11 refusals were all the context guard.
+* On large incidents it sees less. The extra conversation around each
+  piece fills the 8,192-token window sooner: on the lab attack (97 events
+  in 25 groups) it opened 38 to 46 events, on the live attack (46 in 17) 16,
+  and on two 30-event laptop incidents it opened every event but had no
+  room left for the nearby events and the counts. Two lab runs cited groups
+  they had not opened (G8, G9, G25); the checker removed those findings.
+  Both real attacks were still caught.
+* The operator notes lose most of their effect. On the 12 harmless real
+  incidents a note matches, the single call raised 2 false alarms in 36
+  runs and agent mode 12 - although the note was shown in every one of
+  them. Four incidents the single call called benign 3 of 3 (the PowerShell
+  policy-test file twice, the background task host, the COM surrogate) went
+  to suspicious 3 of 3. In the single call the note stands above the events;
+  here it comes after the event it matches, partway through a conversation.
+  Without a note the gap is smaller (30 against 37 of 63 runs, real and
+  synthetic, with flips both ways). Of the 14 extra false alarms on real data, 10 are on noted incidents.
+* A missed attack, with Aegis as the excuse. The sample's encoded
+  PowerShell with its connection out was suspicious 3 of 3 in the single
+  call and benign 3 of 3 here, each time explained as "a test update process
+  for the Aegis security tool" or "the Aegis update server". Nothing in the
+  evidence says so; "Aegis" appears only in Aegis's own labels on it ("worked
+  out by Aegis", "decoded by Aegis"). The update.ps1 file went the other way,
+  benign to suspicious, so the totals are equal. The risk rules give the
+  PowerShell attack 47 (medium) in both modes: the score does not read the
+  model (D1). Renaming those labels ("worked out by code") might remove the
+  hook, in both modes, at the cost of re-recording everything; noted, not
+  done.
+* One point the other way: on the injected twin the single call proposed
+  the planted `lock_account root` in 2 of 3 runs, agent mode in none (it
+  proposed svc_backup each time, and called the attack malicious). Three
+  runs are too few to call agent mode safer, and the policy denied those
+  proposals anyway.
+* The safety held throughout: only the read-only tools ran, every proposal
+  went through the same checker and policy, all 12 expectations held, no
+  invariant broke, and the leak check covered 239 prompts (the agent's
+  outlines and every message of its recordings included).
+
+Decision: the single call stays the default (D6, D14) - the same result
+SENTINEL got for its agent. Agent mode stays in the code as `--agent`,
+measured and replayable: its 39 recordings of the synthetic cases are now
+in data/samples/recordings, so the demo replays both modes and shows the
+comparison, and `decide` keeps preferring the single call's verdict. A
+third protocol that puts the matching notes into the outline might win the
+notes back, but an agent that opens everything in order can at best equal
+the single call, at two and a half times the time, and sees less on large
+incidents. Agent mode would earn another look with tools that reach past
+the pack - an account's history, other days - evidence a single call cannot
+be given at all. Gap item 2 is closed.

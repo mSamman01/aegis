@@ -185,12 +185,14 @@ No case name or label reached any of the 76 prompts checked.
    stand-in gate. CI runs the tests on Windows and Linux and publishes the
    demo to GitHub Pages from `main`. Results on the real lab, in counts:
    `docs/eval-results.md`.
-2. Agent mode - written (2026-11-18, D44), waiting for its measurement.
-   `investigate --agent`: the model starts from the outline and opens the
-   pack's own sections through four read-only tools, one per turn, up to 10;
-   only what it opened can be cited, and the answer goes through the same
-   checker and policy. `evaluate --investigate --agent` asks the same
-   incidents and puts both modes side by side on the incidents both
-   answered; the probe also attacks the tool channel.
+2. Agent mode - done (2026-11-18, D44-D46). `investigate --agent`: the
+   model starts from the outline and opens the pack's own sections one
+   choice at a time, up to 10; only what it opened can be cited, and the
+   answer goes through the same checker and policy. Measured with `evaluate
+   --investigate --agent` on the 41 incidents both modes answered: the same
+   attacks caught, false alarms on real harmless incidents up from 22% to
+   40%, twins flagged 15 of 18 against 12, two and a half times slower. The
+   single call stays the default; the probe also attacks the tool channel,
+   and the demo replays both modes.
 3. Posture advice for the monitored PC (SCA and vulnerability findings),
    advice only.

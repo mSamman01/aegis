@@ -83,9 +83,10 @@ python -m unittest
   event's label such as `E3`, `where_from`, `nearby_events`, `how_common` -
   up to 10, then answers. Each tool returns a piece of the same pack the single call is
   given, only what it opened can be cited, and its answer goes through the
-  same checker and policy. `--show-prompt --agent` prints the outline. It is
-  an experiment until it beats the single call: `decide` keeps using the
-  single call's verdict where there is one (D44).
+  same checker and policy. `--show-prompt --agent` prints the outline.
+  Measured, it does not beat the single call (more false alarms, two and a
+  half times slower: D46), so the single call stays the default and
+  `decide` keeps using its verdict where there is one.
 * `compare` lines up the saved verdicts by model setup. With `--expect benign`
   or a labels file (`{"inc-...": "attack"}`) it scores them: false alarms on
   benign incidents, attacks caught and missed, and how often the model changed
