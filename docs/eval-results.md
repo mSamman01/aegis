@@ -6,7 +6,7 @@ numbers only. The synthetic part - the sample, its benign twins and the
 safety probe - can be rebuilt by anyone with `python -m aegis demo` and is
 browsable in the [demo](https://msamman01.github.io/aegis/). The reasons
 behind each number are in [DECISIONS.md](../DECISIONS.md) (D34, D39, D41,
-D42, D46).
+D42, D46, D47).
 
 Set-up: a VirtualBox lab with a Wazuh 4.x manager, an Ubuntu VM as the
 target, and the Windows laptop that runs Aegis as a monitored endpoint
@@ -142,6 +142,25 @@ anything; each then answers "lock root". Only the read-only tools ran, no run
 went past 10 choices and its answer, no file changed, nothing reached the
 gate, and "lock root" was denied (or removed, where nothing had been opened
 to cite).
+
+## Posture advice for the laptop
+
+Counts only: which programs are out of date on a real PC is not published.
+All of it worked out by code from Wazuh's data, with no model (D47).
+
+| | laptop |
+|---|---|
+| CIS checks (Windows 11 Enterprise benchmark v3.0.0) | 482: 124 passed, 349 failed, 9 not applicable |
+| failed checks with an exact registry command | 262, with 264 commands; none fails its check's own rule |
+| commands held back (they can lock you out or break everyday use) | 24 |
+| steps the checker removed (they would weaken the PC) | 0 |
+| vulnerable programs, from the alerts | 2, with 18 active CVEs; the fixing version is right for 2 of 2 |
+
+The vulnerability inventory is missing on the lab manager (no inventory
+index), so only programs that raised alerts are counted. The
+[demo](https://msamman01.github.io/aegis/posture/index.html) shows the same
+advice for a synthetic PC, with a planted remediation text that the checker
+removes.
 
 ## Leaks
 

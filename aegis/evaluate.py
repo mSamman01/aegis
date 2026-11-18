@@ -44,6 +44,7 @@ from aegis.policy import Policy
 from aegis.store import read_verdicts, replace_lines, save_verdict, write_events, write_incidents, write_json
 
 DEFAULT_OUT = PROJECT / "runs" / "eval"
+POSTURE_DIR = PROJECT / "data" / "posture"  # real posture exports (git-ignored); the newest one is checked
 MODEL_LEVEL = 7  # in real data, the model is asked about incidents at this level or above, and about attacks
 # Words that only the evaluation knows. If one reached a prompt, the model would be told the answer:
 # SENTINEL lost a result to exactly that (a case name in the prompt).
@@ -424,7 +425,8 @@ def investigate_cases(cases: list[Prepared], *, model: str, repeat: int, notes, 
 # --------------------------------------------------------------------------
 
 def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = None, *,
-        say: Callable[[str], None] = print, investigate: dict | list | None = None, probe: bool = True) -> dict:
+        say: Callable[[str], None] = print, investigate: dict | list | None = None, probe: bool = True,
+        posture_dir: Path | None = POSTURE_DIR) -> dict:
     """``investigate`` is one setup for investigate_cases, or a list of them (asked in that order)."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -433,6 +435,7 @@ def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = N
         investigate_cases(prepared, say=say, **setup)
     results = [score(case, policy) for case in prepared]
     modes = compare_modes(prepared, policy)
+    posture = posture_results(posture_dir)
     prompts, leaks = check_leaks(prepared)
     probe_result = None
     if probe:
@@ -442,12 +445,34 @@ def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = N
     report = {"policy": policy.id, "cases": [_as_dict(r) for r in results],
               "head_to_head": head_to_head(results),
               "modes": [row.as_dict() for row in modes],
+              "posture": posture,
               "leaks": {"prompts_checked": prompts, "found": leaks},
               "probe": probe_result.as_dict() if probe_result else None}
     write_json(out / "report.json", report)
-    (out / "report.md").write_text(render(results, probe_result, policy.id, originals, (prompts, leaks), modes),
-                                   encoding="utf-8", newline="\n")
-    return {"results": results, "probe": probe_result, "out": out, "leaks": (prompts, leaks), "modes": modes}
+    (out / "report.md").write_text(render(results, probe_result, policy.id, originals, (prompts, leaks), modes,
+                                          posture), encoding="utf-8", newline="\n")
+    return {"results": results, "probe": probe_result, "out": out, "leaks": (prompts, leaks), "modes": modes,
+            "posture": posture}
+
+
+def posture_results(posture_dir: Path | None = POSTURE_DIR) -> list:
+    """Posture advice checked on the synthetic sample and, with ``posture_dir``, the newest real export there (D47)."""
+    from aegis import posture as posturing
+
+    sources = [("synthetic sample", PROJECT / "data" / "samples" / "posture_sample.json")]
+    real = sorted(Path(posture_dir).glob("*.json"), key=lambda path: path.stat().st_mtime) if posture_dir else []
+    if real:
+        sources.append(("real export", real[-1]))
+    found = []
+    for name, path in sources:
+        try:
+            state = posturing.load(path)
+        except posturing.PostureError as exc:
+            found.append({"source": name, "ok": False, "error": str(exc)})
+            continue
+        checked = posturing.verify(state, posturing.rank(state))
+        found.append(dict(checked, source=name))
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -621,7 +646,7 @@ def _pct(part: int, whole: int) -> str:
 
 
 def render(results: list[CaseResult], probe, policy_id: str, originals: dict | None = None,
-           leaks: tuple | None = None, modes: list | None = None) -> str:
+           leaks: tuple | None = None, modes: list | None = None, posture: list | None = None) -> str:
     """The report as Markdown (ASCII only, so it reads anywhere)."""
     lines = [
         "# Aegis evaluation",
@@ -709,6 +734,21 @@ def render(results: list[CaseResult], probe, policy_id: str, originals: dict | N
     else:
         lines.append("Not asked in agent mode yet. On the laptop, with Ollama running: "
                      "`python -m aegis evaluate --investigate --agent`")
+    if posture:
+        lines += ["", "## Posture advice", "",
+                  "Worked out by code, no model (D47). A bound is right when the version it names is outside "
+                  "every CVE's condition; a command is right when the value it writes passes its check's own rule.",
+                  "", "| export | programs (CVEs) | bounds right | failed CIS checks | with a command | commands "
+                  "failing their rule | shown steps the checker rejects | commands held back | steps removed by the "
+                  "checker | shareable copy clean |", "|---|---|---|---|---|---|---|---|---|---|"]
+        for p in posture:
+            if "error" in p:
+                lines.append(f"| {p['source']} | could not be read: {_md(p['error'])} | | | | | | | | |")
+                continue
+            lines.append(f"| {p['source']} | {p['programs']} ({p['cves']}) | {p['bounds_ok']} of {p['programs']} | "
+                         f"{p['checks']} | {p['with_command']} | {p['commands_failing']} of {p['commands']} | "
+                         f"{p['shown_rejected']} | {p['held']} | {p['removed']} | "
+                         f"{'yes' if p['shareable_clean'] else 'NO'} |")
     lines += ["", "## Leaks into the prompts", ""]
     if leaks is not None:
         prompts, found = leaks

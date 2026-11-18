@@ -1,0 +1,345 @@
+#!/usr/bin/python3 -I
+"""aegis-posture - copy one agent's posture from the Wazuh manager into a file. It only reads.
+
+Run it on the manager, as root, whenever you want fresh posture advice:
+
+    sudo /usr/bin/python3 -I aegis-posture --agent 001
+
+It asks for the Wazuh API password (of the user "wazuh" unless --api-user
+says otherwise) and writes /tmp/aegis-posture-<agent>.json, readable only
+by you. Copy that file to the laptop and run python -m aegis posture.
+
+What it collects, as Wazuh gives it (nothing is interpreted here):
+  * the agent's name, OS and version                Wazuh API  GET /agents
+  * the security configuration assessment: every policy and every check,
+    with its result, CIS's rationale and remediation, and the rules it tests
+                                                    Wazuh API  GET /sca/<agent>, /sca/<agent>/checks/<policy>
+  * the vulnerability inventory                     indexer    wazuh-states-vulnerabilities-*
+  * the vulnerability alerts in the alert archive: they carry each CVE's
+    "Package less than X" bound, which the inventory may not
+
+Root is needed for the indexer's admin certificate and the alert archive.
+The API password is used for this run only and never written anywhere.
+Whatever cannot be read is listed under "problems" in the file: nothing is
+skipped silently.
+
+Written for Python 3.6 and newer, standard library only.
+"""
+
+import argparse
+import base64
+import tempfile
+import getpass
+import glob
+import gzip
+import json
+import os
+import re
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+FORMAT = 1
+API = "https://localhost:55000"
+API_CERT = "/var/ossec/api/configuration/ssl/server.crt"
+INDEXER = "https://localhost:9200"
+INDEXER_CERTS = "/etc/wazuh-indexer/certs"
+INDEX = "wazuh-states-vulnerabilities-*"
+ALERTS = "/var/ossec/logs/alerts"
+PAGE = 500
+MAX_HITS = 10000  # the indexer's default result window
+TIMEOUT = 60
+
+
+class Problem(Exception):
+    """Something could not be read; the message says what and why."""
+
+
+def _context(url, ca=None, cert=None, key=None):
+    """TLS for a service on this machine. Its certificate is checked when we have the CA file;
+    the host name is not (the certificates name the node, not localhost)."""
+    if not url.startswith("https://"):
+        return None, "plain http"
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    if ca and os.path.isfile(ca):
+        context.load_verify_locations(ca)
+        verified = "certificate checked against " + ca
+    else:
+        context.verify_mode = ssl.CERT_NONE
+        verified = "certificate not checked (no CA file)"
+    if cert and key:
+        context.load_cert_chain(cert, key)
+    return context, verified
+
+
+def _call(url, context, headers=None, body=None, method=None):
+    request = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT, context=context) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read()[:300].decode("utf-8", "replace")
+        raise Problem("{} answered HTTP {}: {}".format(_where(url), exc.code, " ".join(detail.split())))
+    except (urllib.error.URLError, OSError, ssl.SSLError) as exc:
+        raise Problem("{} could not be reached: {}".format(_where(url), getattr(exc, "reason", exc)))
+
+
+def _where(url):
+    parts = urllib.parse.urlsplit(url)
+    return "{}://{}{}".format(parts.scheme, parts.netloc, parts.path)
+
+
+def _json(raw, what):
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Problem("{}: the answer was not JSON".format(what))
+
+
+class Api:
+    """The Wazuh server API: one token, then GET requests."""
+
+    def __init__(self, base, user, password, context):
+        self.base, self.context = base.rstrip("/"), context
+        basic = base64.b64encode("{}:{}".format(user, password).encode("utf-8")).decode("ascii")
+        raw = _call(self.base + "/security/user/authenticate?raw=true", context,
+                    {"Authorization": "Basic " + basic}, method="POST")
+        token = raw.decode("utf-8", "replace").strip()
+        if not token or token.startswith("{"):
+            raise Problem("the Wazuh API did not give a token (wrong user or password?)")
+        self.headers = {"Authorization": "Bearer " + token}
+
+    def get(self, path, **query):
+        url = self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")
+        data = _json(_call(url, self.context, self.headers), path)
+        if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
+            raise Problem("{}: unexpected answer {}".format(path, str(data)[:200]))
+        return data["data"]
+
+    def every(self, path, **query):
+        """All items of a paged list."""
+        items, offset = [], 0
+        while True:
+            data = self.get(path, limit=PAGE, offset=offset, **query)
+            page = data.get("affected_items") or []
+            items += page
+            total = data.get("total_affected_items", len(items))
+            offset += len(page)
+            if not page or offset >= total:
+                return items, total
+
+
+def collect_api(api, agent):
+    found = {}
+    agents = api.get("/agents", agents_list=agent).get("affected_items") or []
+    if not agents:
+        raise Problem("the Wazuh API knows no agent {}".format(agent))
+    found["agent"] = agents[0]
+    policies, _ = api.every("/sca/{}".format(agent))
+    found["sca_policies"] = policies
+    checks, problems = {}, []
+    for policy in policies:
+        policy_id = str(policy.get("policy_id") or "")
+        if not re.match(r"^[A-Za-z0-9_.-]{1,100}$", policy_id):
+            problems.append("SCA policy with an unexpected id {!r} was left out".format(policy_id))
+            continue
+        items, total = api.every("/sca/{}/checks/{}".format(agent, policy_id))
+        checks[policy_id] = items
+        if len(items) != total:
+            problems.append("SCA policy {}: {} of {} checks read".format(policy_id, len(items), total))
+    found["sca_checks"] = checks
+    return found, problems
+
+
+def _search(base, context, headers, body):
+    headers = dict(headers, **{"Content-Type": "application/json"})
+    data = _json(_call(base.rstrip("/") + "/" + INDEX + "/_search", context, headers,
+                       json.dumps(body).encode("utf-8"), "POST"), INDEX)
+    if not isinstance(data, dict):
+        raise Problem("{}: unexpected answer".format(INDEX))
+    return data
+
+
+def collect_vulnerabilities(base, context, headers, agent):
+    """The agent's inventory records. An empty answer is explained, never just returned."""
+    data = _search(base, context, headers, {"size": MAX_HITS, "query": {"term": {"agent.id": agent}}})
+    hits = data.get("hits") or {}
+    found = [hit.get("_source") for hit in hits.get("hits") or [] if isinstance(hit, dict)]
+    total = hits.get("total")
+    total = total.get("value") if isinstance(total, dict) else total
+    problems = []
+    if isinstance(total, int) and total > len(found):
+        problems.append("vulnerability inventory: {} of {} records read".format(len(found), total))
+    if not found:
+        problems.append("vulnerability inventory: no record for agent {} ({})".format(
+            agent, _what_is_there(base, context, headers)))
+    return found, problems
+
+
+def _what_is_there(base, context, headers):
+    """Which wazuh-states indices exist, how big they are, and which agents the inventory holds."""
+    try:
+        listed = _json(_call(base.rstrip("/") + "/_cat/indices/wazuh-states-*?format=json&h=index,docs.count",
+                             context, headers), "_cat/indices")
+        indices = ", ".join("{} ({} records)".format(i.get("index"), i.get("docs.count"))
+                            for i in listed if isinstance(i, dict)) or "none"
+    except Problem as exc:
+        indices = "could not be listed: {}".format(exc)
+    try:
+        data = _search(base, context, headers,
+                       {"size": 0, "aggs": {"agents": {"terms": {"field": "agent.id", "size": 20}}}})
+        buckets = ((data.get("aggregations") or {}).get("agents") or {}).get("buckets") or []
+        agents = ", ".join("{} ({})".format(b.get("key"), b.get("doc_count")) for b in buckets) or "none"
+    except Problem as exc:
+        agents = "could not be counted: {}".format(exc)
+    return "indices named wazuh-states-*: {}; agents in {}: {}".format(indices, INDEX, agents)
+
+
+def collect_alerts(folder, agent):
+    """Vulnerability alerts for the agent, from alerts.json and the archive (plain or gzip)."""
+    paths = [os.path.join(folder, "alerts.json")]
+    paths += sorted(glob.glob(os.path.join(folder, "*", "*", "ossec-alerts-*.json")))
+    paths += sorted(glob.glob(os.path.join(folder, "*", "*", "ossec-alerts-*.json.gz")))
+    found, problems, unreadable = {}, [], 0
+    for path in paths:
+        if not os.path.isfile(path):
+            continue
+        try:
+            handle = gzip.open(path, "rb") if path.endswith(".gz") else open(path, "rb")
+            with handle:
+                for line in handle:
+                    if b'"vulnerability"' not in line or b'"cve"' not in line:
+                        continue
+                    try:
+                        alert = json.loads(line.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        unreadable += 1
+                        continue
+                    if str((alert.get("agent") or {}).get("id")) != agent:
+                        continue
+                    vulnerability = (alert.get("data") or {}).get("vulnerability")
+                    if not isinstance(vulnerability, dict):
+                        continue
+                    package = vulnerability.get("package") or {}
+                    key = (vulnerability.get("cve"), package.get("name"), package.get("version"),
+                           package.get("condition"), vulnerability.get("status"))
+                    record = {"timestamp": alert.get("timestamp"), "rule": (alert.get("rule") or {}).get("id"),
+                              "vulnerability": vulnerability}
+                    if key not in found or str(record["timestamp"]) > str(found[key]["timestamp"]):
+                        found[key] = record
+        except (OSError, EOFError) as exc:
+            problems.append("alert file {} could not be read to the end: {}".format(path, exc))
+    if unreadable:
+        problems.append("{} vulnerability alert lines were not valid JSON and were left out".format(unreadable))
+    return sorted(found.values(), key=lambda r: str(r["timestamp"])), problems
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Copy one agent's posture from this Wazuh manager into a file.")
+    parser.add_argument("--agent", default="001", help="agent id (default: 001, the laptop)")
+    parser.add_argument("--out", default=None, help="file to write (default: /tmp/aegis-posture-<agent>.json)")
+    parser.add_argument("--api-url", default=API)
+    parser.add_argument("--api-user", default="wazuh")
+    parser.add_argument("--indexer-url", default=INDEXER,
+                        help="default: " + INDEXER + " (the indexer may listen on this machine's own address instead)")
+    parser.add_argument("--indexer-user", default=None,
+                        help="indexer user (asks for its password); without it, the admin certificate is used")
+    parser.add_argument("--alerts", default=ALERTS, help="the alert folder (default: " + ALERTS + ")")
+    args = parser.parse_args(argv)
+    if not re.match(r"^[0-9]{3,8}$", args.agent):
+        print("error: --agent must be an agent id such as 001", file=sys.stderr)
+        return 2
+    out = args.out or "/tmp/aegis-posture-{}.json".format(args.agent)
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        print("note: not running as root; the certificate and the archive may not be readable", file=sys.stderr)
+
+    export = {"aegis_posture_export": FORMAT, "agent_id": args.agent,
+              "made_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "sources": {}, "problems": []}
+    problems = export["problems"]
+
+    password = os.environ.get("AEGIS_API_PASSWORD") or getpass.getpass(
+        "Wazuh API password for {}: ".format(args.api_user))
+    context, how = _context(args.api_url, API_CERT)
+    export["sources"]["api"] = "{} ({})".format(args.api_url, how)
+    try:
+        found, more = collect_api(Api(args.api_url, args.api_user, password, context), args.agent)
+        export.update(found)
+        problems += more
+    except Problem as exc:
+        hint = ""
+        if "HTTP 401" in str(exc):
+            hint = (" - this needs the Wazuh API user's own password, not the login password (on an all-in-one "
+                    "install it is in wazuh-passwords.txt inside wazuh-install-files.tar)")
+        problems.append("SCA not read: {}{}".format(exc, hint))
+    finally:
+        password = None
+
+    headers = {}
+    if args.indexer_user:
+        secret = os.environ.get("AEGIS_INDEXER_PASSWORD") or getpass.getpass(
+            "Indexer password for {}: ".format(args.indexer_user))
+        headers["Authorization"] = "Basic " + base64.b64encode(
+            "{}:{}".format(args.indexer_user, secret).encode("utf-8")).decode("ascii")
+        secret = None
+        context, how = _context(args.indexer_url, os.path.join(INDEXER_CERTS, "root-ca.pem"))
+    else:
+        cert, key = os.path.join(INDEXER_CERTS, "admin.pem"), os.path.join(INDEXER_CERTS, "admin-key.pem")
+        try:
+            context, how = _context(args.indexer_url, os.path.join(INDEXER_CERTS, "root-ca.pem"),
+                                    *((cert, key) if args.indexer_url.startswith("https://") else (None, None)))
+            how += ", admin certificate" if args.indexer_url.startswith("https://") else ""
+        except (OSError, ssl.SSLError) as exc:
+            context, how = None, "admin certificate not readable: {}".format(exc)
+    export["sources"]["indexer"] = "{} ({})".format(args.indexer_url, how)
+    try:
+        if args.indexer_url.startswith("https://") and context is None:
+            raise Problem(how + " (or give --indexer-user)")
+        export["vulnerabilities"], more = collect_vulnerabilities(args.indexer_url, context, headers, args.agent)
+        problems += more
+    except Problem as exc:
+        hint = ""
+        if "could not be reached" in str(exc) and "localhost" in args.indexer_url:
+            hint = (" - the indexer may listen on this machine's network address: run again with "
+                    "--indexer-url https://<that address>:9200")
+        problems.append("vulnerability inventory not read: {}{}".format(exc, hint))
+
+    export["vulnerability_alerts"], more = collect_alerts(args.alerts, args.agent)
+    export["sources"]["alerts"] = args.alerts
+    problems += more
+
+    try:
+        # A new file, then swapped in: an earlier copy may belong to the account that ran sudo,
+        # and in /tmp not even root may open someone else's file for writing.
+        descriptor, temporary = tempfile.mkstemp(prefix=".aegis-posture-", dir=os.path.dirname(os.path.abspath(out)))
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(export, handle, ensure_ascii=False, indent=1, sort_keys=True)
+            handle.write("\n")
+        owner = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+        if all(value and value.isdigit() for value in owner) and hasattr(os, "chown"):
+            os.chown(temporary, int(owner[0]), int(owner[1]))  # so the account that ran sudo can copy it
+        os.replace(temporary, out)
+    except OSError as exc:
+        print("error: cannot write {}: {}".format(out, exc), file=sys.stderr)
+        return 2
+
+    checks = sum(len(items) for items in (export.get("sca_checks") or {}).values())
+    failed = sum(1 for items in (export.get("sca_checks") or {}).values() for c in items
+                 if str(c.get("result")).lower() == "failed")
+    print("Wrote {}".format(out))
+    print("  agent        {} {}".format(args.agent, (export.get("agent") or {}).get("name", "(unknown)")))
+    print("  SCA          {} policies, {} checks, {} failed".format(len(export.get("sca_policies") or []), checks, failed))
+    print("  inventory    {} vulnerability records".format(len(export.get("vulnerabilities") or [])))
+    print("  alerts       {} vulnerability alerts with their bounds".format(len(export["vulnerability_alerts"])))
+    for problem in problems:
+        print("  PROBLEM      {}".format(problem))
+    print("Copy it to the laptop, then delete it here: it describes the laptop's weak spots.")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

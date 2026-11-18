@@ -207,6 +207,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     ev.add_argument("--model", default=None, help="with --investigate: Ollama model (default: qwen3:4b)")
     ev.add_argument("--repeat", type=int, default=3, help="with --investigate: answers per incident (default: 3)")
     ev.add_argument("--no-knowledge", action="store_true", help="with --investigate: no operator notes")
+    ev.add_argument("--posture-dir", type=Path, default=None,
+                    help="folder of real posture exports; the newest is checked (default: data/posture)")
     ev.add_argument("--agent", action="store_true",
                     help="with --investigate: ask in agent mode (the model opens the evidence one tool at a time)")
 
@@ -215,6 +217,15 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     exp.add_argument("--out", type=Path, required=True, help="folder for the pages (created if missing)")
     exp.add_argument("--label", default=None, help="what the pages call the run folder (default: its name)")
     exp.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+
+    pos = commands.add_parser("posture", help="rank this PC's weak spots and write fix steps (advice only)")
+    pos.add_argument("--from", dest="source", type=Path, default=None,
+                     help="the file lab/aegis-posture wrote (default: the newest in data/posture)")
+    pos.add_argument("--out", type=Path, default=RUN_DIR / "posture", help="where the report goes (default: runs/posture)")
+    pos.add_argument("--top", type=int, default=10, help="how many fixes to give in full (default: 10)")
+    pos.add_argument("--shareable", action="store_true",
+                     help="also write a copy with the PC's name, the --hide names, addresses and profile paths replaced")
+    pos.add_argument("--hide", action="append", default=[], help="with --shareable: a name to replace (repeatable)")
 
     dem = commands.add_parser("demo", help="build the public demo site from the synthetic sample only")
     dem.add_argument("--out", type=Path, default=Path("site"), help="folder for the site (default: site)")
@@ -233,6 +244,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
         return _export(args)
     if args.command == "demo":
         return _demo(args)
+    if args.command == "posture":
+        return _posture(args)
     run_dir: Path = args.dir
     if args.command == "decide":
         return _decide(args)
@@ -644,7 +657,8 @@ def _evaluate(args: argparse.Namespace) -> int:
                        "mode": agent.MODE if args.agent else "single_call"}
     try:
         outcome = evaluating.run(cases, args.out, policy, policy_path, investigate=investigate,
-                                 say=lambda text: print(_ascii(text), flush=True))
+                                 say=lambda text: print(_ascii(text), flush=True),
+                                 posture_dir=args.posture_dir or evaluating.POSTURE_DIR)
     except InvestigationError as exc:
         print(_ascii(f"error: {exc}"), file=sys.stderr)
         print("The answers received so far are saved; run the same command again to carry on.", file=sys.stderr)
@@ -690,6 +704,13 @@ def _evaluate(args: argparse.Namespace) -> int:
     print(f"Agent probe   {len(probe.agent_rows)} hostile tool scripts: "
           + ("only read-only tools ran, every run ended in time, no file changed, nothing reached the gate"
              if probe.agent_ok else "SOMETHING GOT THROUGH (see the report)"))
+    for row in outcome["posture"]:
+        if "error" in row:
+            print(_ascii(f"Posture       {row['source']}: COULD NOT BE READ ({row['error']})"))
+            continue
+        print(_ascii(f"Posture       {row['source']}: {row['commands']} commands, {row['commands_failing']} failing their "
+                     f"rule; {row['bounds_ok']} of {row['programs']} version bounds right; {row['removed']} steps "
+                     f"removed by the checker; shareable copy {'clean' if row['shareable_clean'] else 'NOT CLEAN'}"))
     for row in outcome["modes"]:
         if row.mode != "single_call" and row.runs:
             print(_ascii(f"Agent mode    {row.data}: {row.variant}, {row.runs} runs on {row.incidents} incidents "
@@ -701,7 +722,7 @@ def _evaluate(args: argparse.Namespace) -> int:
     print(_ascii(f"Report        {outcome['out'] / 'report.md'}"))
     print(_ascii(f"              open a case in the dashboard:  python -m aegis serve --dir {outcome['out']}{os.sep}<case>"))
     bad = (failed or violations or unsafe or leaks or probe.hostile_executed or not probe.control_executed
-           or not probe.agent_ok)
+           or not probe.agent_ok or not all(row.get("ok") for row in outcome["posture"]))
     return 1 if bad else 0
 
 
@@ -850,6 +871,55 @@ def _export(args: argparse.Namespace) -> int:
     for problem in problems[:10]:
         print(_ascii(f"  PROBLEM  {problem}"), file=sys.stderr)
     return 1 if problems else 0
+
+
+def _posture(args: argparse.Namespace) -> int:
+    from aegis import posture as posturing
+
+    if not 1 <= args.top <= 100:
+        print("error: --top must be between 1 and 100", file=sys.stderr)
+        return 2
+    if args.hide and not args.shareable:
+        print("error: --hide only works with --shareable", file=sys.stderr)
+        return 2
+    source = args.source
+    if source is None:
+        found = sorted(Path("data/posture").glob("*.json"), key=lambda path: path.stat().st_mtime)
+        if not found:
+            print("error: no export in data/posture; make one on the manager with lab/aegis-posture "
+                  "(see README), or give --from", file=sys.stderr)
+            return 2
+        source = found[-1]
+    try:
+        state = posturing.load(source)
+        advice = posturing.rank(state)
+        written = posturing.write_report(args.out, state, advice, args.top,
+                                         hide=args.hide if args.shareable else None)
+    except posturing.SanitizeError as exc:
+        print(_ascii(f"error: no shareable copy was written: {exc}"), file=sys.stderr)
+        return 2
+    except (posturing.PostureError, OSError) as exc:
+        print(_ascii(f"error: {exc}"), file=sys.stderr)
+        return 2
+    policy = state.policy
+    commands = sum(1 for a in advice if a.kind == "check" and any(s.kind == "run" for s in a.steps))
+    print(_ascii(f"PC        {state.agent_name} ({state.os_name}), exported {state.made_at}"))
+    print(_ascii(f"CIS       {policy.get('name', '-')}: score {policy.get('score', '?')}%, {state.passed} passed, "
+                 f"{len(state.checks)} failed ({commands} with a checked command, "
+                 f"{sum(bool(a.held) for a in advice)} held back)"))
+    print(f"Programs  {len(state.programs)} with {sum(len(p.cves) for p in state.programs)} active CVEs")
+    print(f"Checker   {sum(len(a.removed) for a in advice)} steps removed (they would weaken the PC)")
+    print()
+    for number, item in enumerate(advice[:args.top], 1):
+        print(_ascii(f"{number:>2}. {item.score:>3}  {_clip(item.title, 92)}"))
+    for problem in state.problems:
+        print(_ascii(f"Note      {problem}"))
+    print()
+    print(_ascii(f"Report    {written['report']}  (and {written['page'].name}, advice.json)"))
+    if "shareable" in written:
+        print(_ascii(f"Shareable {written['shareable']}  (names, addresses and profile paths replaced)"))
+    print("Advice only: Aegis changes nothing on this PC.")
+    return 0
 
 
 def _demo(args: argparse.Namespace) -> int:

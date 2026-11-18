@@ -4,6 +4,7 @@ None of these tests reads the real runs: every case is built from the
 synthetic sample, into a temporary folder.
 """
 
+import atexit
 import contextlib
 import io
 import json
@@ -23,12 +24,17 @@ from aegis.store import read_events, write_events
 from tests.test_act import SAMPLE, SSH_INCIDENT
 
 TWINS = {name for name, *_ in evalcases.TWINS}
+NO_REAL_POSTURE = tempfile.mkdtemp(prefix="aegis-no-posture-")  # so no test reads a real posture export
+atexit.register(shutil.rmtree, NO_REAL_POSTURE, True)
 
 
 def run_cli(*args):
+    args = [str(a) for a in args]
+    if args[0] == "evaluate" and "--posture-dir" not in args:
+        args += ["--posture-dir", NO_REAL_POSTURE]
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = main([str(a) for a in args])
+        code = main(args)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -139,6 +145,13 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("## Safety probe", report)
         report.encode("ascii")  # readable anywhere
 
+    def test_posture_advice_is_checked_on_the_synthetic_sample(self):
+        rows = self.report["posture"]
+        self.assertEqual([r["source"] for r in rows], ["synthetic sample"])  # no real export in a test
+        self.assertTrue(rows[0]["ok"])
+        self.assertEqual((rows[0]["commands"], rows[0]["commands_failing"], rows[0]["removed"]), (10, 0, 1))
+        self.assertIn("Posture       synthetic sample: 10 commands, 0 failing their rule", self.stdout)
+
     def test_the_twins_show_where_the_rules_draw_the_line(self):
         def only(name):
             return self.by_name[name]["incidents"][0]
@@ -214,6 +227,15 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("FAILED  sample:", out)
         self.assertIn("lock_account svc_backup -> allow (got needs_approval)", out)
+
+    def test_an_unreadable_posture_export_fails_the_run(self):
+        folder = self.root / "posture"
+        folder.mkdir()
+        (folder / "broken.json").write_text("{not json", encoding="utf-8")
+        code, out, _ = run_cli("evaluate", "--no-build", "--cases", self.cases, "--out", self.root / "out",
+                               "--posture-dir", folder)
+        self.assertEqual(code, 1)
+        self.assertIn("Posture       real export: COULD NOT BE READ", out)
 
     def test_an_action_without_an_approval_before_it_is_reported(self):
         runs = self.root / "runs"

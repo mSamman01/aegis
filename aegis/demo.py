@@ -36,6 +36,7 @@ from typing import Callable
 
 from aegis import evalcases
 from aegis import evaluate as evaluating
+from aegis import posture as posturing
 from aegis.agent import MODE as AGENT_MODE
 from aegis.execute import GateExecutor
 from aegis.export import WEB_DIR, check_site, export_run
@@ -48,6 +49,8 @@ from aegis.web import pages
 from aegis.web.pages import tag
 
 RECORDINGS = evalcases.PROJECT / "data" / "samples" / "recordings"
+POSTURE_SAMPLE = evalcases.PROJECT / "data" / "samples" / "posture_sample.json"
+
 MODEL = "qwen3:4b"
 REPEAT = 3
 REVIEWER = "demo"
@@ -56,6 +59,9 @@ NOTICE = ("Synthetic data: these alerts were written for this demo, not taken fr
           "answers are recordings replayed while the site was built, and the lab VM that carried out the "
           "approved lock is a stand-in that connects to nothing.")
 REPO = "https://github.com/mSamman01/aegis"
+POSTURE_NOTICE = (NOTICE + " The posture export was written by hand for the demo too: the programs and CVE ids are "
+                  "made up, and one remediation text is planted to show the checker. Advice only; no AI model wrote "
+                  "it.")
 
 
 class DemoError(RuntimeError):
@@ -88,7 +94,7 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
         say(f"Replaying the recorded answers for {len(specs)} cases"
             + (" (single call and agent mode)" if len(setups) > 1 else ""))
         outcome = evaluating.run(work / "cases", evals, policy, policy_file, say=lambda text: None,
-                                 investigate=setups)
+                                 investigate=setups, posture_dir=None)  # from git only: no real export
         broken = [f"{r.name}: {c}" for r in outcome["results"] for c, ok, _ in r.expectations if not ok]
         broken += [v for r in outcome["results"] for v in r.violations]
         if broken or outcome["leaks"][1]:
@@ -106,6 +112,11 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
             pages_written += export_run(evals / spec["name"], out / "twins" / spec["name"],
                                         label=f"twin {spec['name']} (synthetic)", notice=NOTICE,
                                         site_home="../../index.html", policy_path=policy_file)
+        say("Writing the posture advice for the synthetic PC")
+        sample_posture = posturing.load(POSTURE_SAMPLE)
+        posturing.write_report(out / "posture", sample_posture, posturing.rank(sample_posture),
+                               notice=POSTURE_NOTICE, home="../index.html")
+        pages_written += 1
         report = (evals / "report.md").read_text(encoding="utf-8")
         if tmp in report or str(work.resolve()) in report:
             raise DemoError("the report names the build's temporary folder")
@@ -222,6 +233,12 @@ def _front(specs: list[dict], locked: dict) -> object:
                 "tool at a time -" if agent_recorded() else "",
                 " and the safety probe, which sends hostile model answers down the real path to see what "
                 "reaches the gate.")),
+        tag("h2", "Posture advice"),
+        tag("p", tag("a", "The weak spots of a synthetic PC, ranked, with fix steps", href="posture/index.html"),
+            ": vulnerable programs and failed CIS checks, ranked by fixed rules; the version that fixes every CVE "
+            "and an exact registry command for each setting, both worked out by code and checked; commands that "
+            "could lock you out or break everyday use held back; and a planted remediation text that would turn "
+            "Defender off, removed by the checker. Advice only, and no AI model wrote it."),
         tag("h2", "Twins: the same stories, made harmless"),
         tag("p", "Each twin is a story from the sample, edited so that it is harmless - or, for ssh-injected, "
                  "still an attack, with a message in the evidence telling the AI to call it benign. They show "

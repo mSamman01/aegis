@@ -58,6 +58,7 @@ python -m aegis watch
 python -m aegis evaluate
 python -m aegis export --dir runs\lab --out runs\copy-lab
 python -m aegis demo --out site
+python -m aegis posture
 python -m unittest
 ```
 
@@ -143,7 +144,37 @@ python -m unittest
   recorded answers in `data\samples\recordings` (a prompt without one stops
   the build rather than asking a model), the SSH attack approved by "demo"
   and locked on a stand-in gate, then exported with a notice on every page.
+* `posture` ranks the laptop's weak spots - vulnerable programs and failed
+  CIS checks - and writes fix steps into `runs\posture` (report.md,
+  index.html, advice.json). Everything is worked out by code from Wazuh's
+  data, with no model: the version that fixes every CVE of a program, and an
+  exact `reg add` for each CIS setting where the value and its type are
+  certain, checked against the check's own rule. A checker drops any step
+  that would weaken the PC, and commands that could lock you out or break
+  everyday use (blocking Microsoft accounts, the Store, Bluetooth, printing
+  ...) are held back with the reason. Advice only: Aegis never changes the
+  PC. It reads a file made on the manager (below); `--shareable --hide <name>`
+  also writes a copy with names, addresses and profile paths replaced.
 * `unittest` runs the test suite. It never needs the model.
+
+### Posture data from the manager
+
+Wazuh's alerts only carry changes, so the posture comes from the manager's
+own state. Copy `lab/aegis-posture` to the manager and run it once as root;
+it asks for the Wazuh API password (of the API user, not your login) and
+writes `/tmp/aegis-posture-001.json`, readable only by you:
+
+```powershell
+scp lab\aegis-posture <you>@192.168.56.105:/tmp/
+ssh -t <you>@192.168.56.105 "sudo /usr/bin/python3 -I /tmp/aegis-posture --agent 001"
+scp <you>@192.168.56.105:/tmp/aegis-posture-001.json data\posture\
+ssh <you>@192.168.56.105 "rm /tmp/aegis-posture-001.json /tmp/aegis-posture"
+python -m aegis posture
+```
+
+If the indexer does not answer on localhost, add `--indexer-url
+https://<the manager's address>:9200`. The file describes the laptop's weak
+spots: `data\posture` is ignored by git.
 
 ### The lab VM
 
@@ -266,12 +297,14 @@ aegis/
   export.py    a static copy of the dashboard; demo.py builds the public demo
   investigate.py  asks the model once, then checks its answer
   agent.py     agent mode: the model opens the evidence with read-only tools
+  posture.py   posture advice: ranking, fix steps, checker and sanitizer (no model)
   compare.py   lines up and scores saved verdicts
   store.py     read / write events, incidents and verdicts as JSON lines
   doctor.py    environment checks
   cli.py       the command line
-data/samples/  synthetic Wazuh-shaped alerts (safe to publish), and the model's
-               recorded answers about them (recordings/), replayed by the demo
+data/samples/  synthetic Wazuh-shaped alerts (safe to publish), the model's
+               recorded answers about them (recordings/), replayed by the demo,
+               and a synthetic posture export (posture_sample.json)
 knowledge/     operator notes about this environment
 policy/        what Aegis may do, and where
 lab/           the gate for the lab VM, the feed for the manager, their setup scripts

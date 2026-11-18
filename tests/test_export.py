@@ -168,6 +168,15 @@ class DemoTests(unittest.TestCase):
                 self.assertNotIn("runs/lab", page)
                 self.assertNotIn("runs/live", page)
 
+    def test_the_posture_page_is_synthetic_and_shows_the_checker_at_work(self):
+        page = self.html["posture/index.html"]
+        self.assertIn("written by hand for the demo", page)
+        self.assertIn("Removed by the checker", page)
+        self.assertIn("turns parts of Microsoft Defender off", page)  # the planted remediation text
+        self.assertIn("Commands held back", page)
+        self.assertNotIn("LenovoMSamman", page)
+        self.assertIn('href="posture/index.html"', self.html["index.html"])
+
     def test_a_missing_recording_stops_the_build_instead_of_asking_a_model(self):
         empty = self.root / "no-recordings"
         empty.mkdir()

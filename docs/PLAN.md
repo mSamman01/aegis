@@ -194,5 +194,11 @@ No case name or label reached any of the 76 prompts checked.
    40%, twins flagged 15 of 18 against 12, two and a half times slower. The
    single call stays the default; the probe also attacks the tool channel,
    and the demo replays both modes.
-3. Posture advice for the monitored PC (SCA and vulnerability findings),
-   advice only.
+3. Posture advice - written (2026-11-19, D47). `lab/aegis-posture` copies
+   the laptop's CIS checks and vulnerability alerts from the manager;
+   `python -m aegis posture` ranks them by fixed rules and writes fix steps
+   worked out by code, with no model: the version that fixes every CVE, and a
+   checked `reg add` per CIS setting. A checker drops anything that would
+   weaken the PC; commands that could lock you out or break everyday use are
+   held back. `evaluate` checks every bound and command. Still to do: the
+   vulnerability inventory, which needs the manager's indexer connection.

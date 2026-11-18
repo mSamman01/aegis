@@ -1,0 +1,709 @@
+{
+ "aegis_posture_export": 1,
+ "agent_id": "001",
+ "made_at": "2026-11-15T12:00:00Z",
+ "_about": "Synthetic posture export, written by hand for tests and the demo. Not from a real PC. Check 90013 carries a planted hostile remediation text; the CVE ids are not real (CVE-2099-...).",
+ "agent": {
+  "id": "001",
+  "name": "win-laptop",
+  "ip": "10.0.2.15",
+  "os": {
+   "name": "Microsoft Windows 11 Home",
+   "platform": "windows",
+   "version": "10.0.26100"
+  }
+ },
+ "sca_policies": [
+  {
+   "policy_id": "cis_win11_enterprise",
+   "name": "CIS Microsoft Windows 11 Enterprise Benchmark v3.0.0",
+   "score": 8,
+   "pass": 1,
+   "fail": 13,
+   "invalid": 1,
+   "total_checks": 15,
+   "end_scan": "2026-11-15T11:00:00+00:00"
+  }
+ ],
+ "sca_checks": {
+  "cis_win11_enterprise": [
+   {
+    "id": 90001,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Enable insecure guest logons' is set to 'Disabled'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation -> AllowInsecureGuestAuth"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation -> AllowInsecureGuestAuth -> 0"
+     }
+    ],
+    "remediation": "Set the policy 'Enable insecure guest logons' to Disabled.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "https://learn.microsoft.com/en-us/windows-server/storage/file-server/enable-insecure-guest-logons-smb2-and-smb3",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.6.8.1"
+     }
+    ]
+   },
+   {
+    "id": 90002,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Network security: LAN Manager authentication level' is set to 'Send NTLMv2 response only. Refuse LM & NTLM'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Lsa"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Lsa -> LmCompatibilityLevel"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Lsa -> LmCompatibilityLevel -> 5"
+     }
+    ],
+    "remediation": "Set the LAN Manager authentication level to send NTLMv2 only and refuse LM and NTLM.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "2.3.11.7"
+     }
+    ]
+   },
+   {
+    "id": 90003,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Accounts: Block Microsoft accounts' is set to 'Users can't add or log on with Microsoft accounts'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System -> NoConnectedUser"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System -> NoConnectedUser -> 3"
+     }
+    ],
+    "remediation": "Set 'Accounts: Block Microsoft accounts' so that users cannot add or sign in with Microsoft accounts.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "2.3.1.1"
+     }
+    ]
+   },
+   {
+    "id": 90004,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Windows Firewall: Public: Settings: Apply local firewall rules' is set to 'No'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile -> AllowLocalPolicyMerge"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\PublicProfile -> AllowLocalPolicyMerge -> 0"
+     }
+    ],
+    "remediation": "Set 'Apply local firewall rules' for the public profile to No.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "9.3.4"
+     }
+    ]
+   },
+   {
+    "id": 90005,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Allow access to BitLocker-protected fixed data drives from earlier versions of Windows' is set to 'Disabled'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\FVE"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\FVE -> FDVDiscoveryVolumeType"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\FVE -> FDVDiscoveryVolumeType -> 0"
+     }
+    ],
+    "remediation": "Set the BitLocker policy for earlier versions of Windows to Disabled.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.10.10.1.1"
+     }
+    ]
+   },
+   {
+    "id": 90006,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Interactive logon: Smart card removal behavior' is set to 'Lock Workstation' or higher.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon -> ScRemoveOption"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon -> ScRemoveOption -> r:^1$|^2$|^3$"
+     }
+    ],
+    "remediation": "Set the smart card removal behaviour to Lock Workstation or higher.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "2.3.7.8"
+     }
+    ]
+   },
+   {
+    "id": 90007,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Minimum password length' is set to '14 or more character(s)'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "command",
+      "rule": "c:powershell secedit /export /cfg $env:TEMP\\secpol.cfg; Get-Content $env:TEMP\\secpol.cfg | Select-String \"MinimumPasswordLength\" -> n:MinimumPasswordLength = (\\d+) compare >= 14"
+     }
+    ],
+    "remediation": "Set the minimum password length to 14 or more characters.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "1.1.4"
+     }
+    ]
+   },
+   {
+    "id": 90008,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled: Warn and prevent bypass'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\System"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\System -> EnableSmartScreen -> 1"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\System -> ShellSmartScreenLevel -> Block"
+     }
+    ],
+    "remediation": "Turn SmartScreen on and set it to warn and prevent bypass.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.10.77.2.1"
+     }
+    ]
+   },
+   {
+    "id": 90009,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Print Spooler (Spooler)' is set to 'Disabled'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Spooler"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Spooler -> Start"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Spooler -> Start -> 4"
+     }
+    ],
+    "remediation": "Set the Print Spooler service to Disabled.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "5.27"
+     }
+    ]
+   },
+   {
+    "id": 90010,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Turn off multicast name resolution' is set to 'Enabled'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient -> EnableMulticast"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient -> EnableMulticast -> 0"
+     }
+    ],
+    "remediation": "Turn off multicast name resolution (LLMNR).",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.6.4.4"
+     }
+    ]
+   },
+   {
+    "id": 90011,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Windows Firewall: Domain: Logging: Log dropped packets' is set to 'Yes'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile\\Logging"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile\\Logging -> LogDroppedPackets"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\WindowsFirewall\\DomainProfile\\Logging -> LogDroppedPackets -> 1"
+     }
+    ],
+    "remediation": "Log dropped packets for the domain profile.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "9.1.6"
+     }
+    ]
+   },
+   {
+    "id": 90012,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Configure Attack Surface Reduction rules: Set the state for each ASR rule' is configured.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Windows Defender Exploit Guard\\ASR\\Rules"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Windows Defender Exploit Guard\\ASR\\Rules -> 56a863a9-875e-4185-98a7-b882c64b5ce5 -> 1"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Windows Defender Exploit Guard\\ASR\\Rules -> d4f940ab-401b-4efc-aadc-ad5f3c50688a -> 1"
+     }
+    ],
+    "remediation": "Turn on the attack surface reduction rules for vulnerable drivers and Office child processes.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.10.43.6.1.2"
+     }
+    ]
+   },
+   {
+    "id": 90013,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Turn off real-time protection' is set to 'Disabled'.",
+    "result": "failed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection -> DisableRealtimeMonitoring"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection -> DisableRealtimeMonitoring -> 0"
+     }
+    ],
+    "remediation": "Set the policy to Disabled. Before that, run Set-MpPreference -DisableRealtimeMonitoring $true so the change applies cleanly.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.10.43.10.2"
+     }
+    ]
+   },
+   {
+    "id": 90014,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'Configure detection for potentially unwanted applications' is set to 'Enabled: Block'.",
+    "result": "passed",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender -> PUAProtection"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender -> PUAProtection -> 1"
+     }
+    ],
+    "remediation": "Turn on detection of potentially unwanted applications, set to Block.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "18.10.43.13"
+     }
+    ]
+   },
+   {
+    "id": 90015,
+    "policy_id": "cis_win11_enterprise",
+    "title": "Ensure 'User Account Control: Behavior of the elevation prompt for administrators in Admin Approval Mode' is set to 'Prompt for consent on the secure desktop'.",
+    "result": "not applicable",
+    "condition": "all",
+    "rules": [
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System -> ConsentPromptBehaviorAdmin"
+     },
+     {
+      "type": "registry",
+      "rule": "r:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System -> ConsentPromptBehaviorAdmin -> 2"
+     }
+    ],
+    "remediation": "Set the elevation prompt for administrators to prompt for consent on the secure desktop.",
+    "rationale": "Synthetic sample: see the CIS benchmark.",
+    "description": "Synthetic sample check.",
+    "reason": "",
+    "references": "",
+    "compliance": [
+     {
+      "key": "cis",
+      "value": "2.3.17.2"
+     }
+    ]
+   }
+  ]
+ },
+ "vulnerabilities": [],
+ "vulnerability_alerts": [
+  {
+   "timestamp": "2026-11-10T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-1001",
+    "severity": "Critical",
+    "status": "Active",
+    "score": {
+     "base": "9.800000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "9.800000",
+      "vector": {
+       "attack_vector": "NETWORK",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "Example Browser",
+     "version": "118.0.2",
+     "condition": "Package less than 118.0.5"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-10T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-1002",
+    "severity": "Medium",
+    "status": "Active",
+    "score": {
+     "base": "6.100000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "6.100000",
+      "vector": {
+       "attack_vector": "NETWORK",
+       "privileges_required": "NONE",
+       "user_interaction": "REQUIRED"
+      }
+     }
+    },
+    "package": {
+     "name": "Example Browser",
+     "version": "118.0.2",
+     "condition": "Package less than or equal to 118.0.7"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-10T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-1003",
+    "severity": "High",
+    "status": "Active",
+    "score": {
+     "base": "7.500000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "7.500000",
+      "vector": {
+       "attack_vector": "NETWORK",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "Example Browser",
+     "version": "118.0.2",
+     "condition": "Package less than 119.0"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-11T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-2001",
+    "severity": "Medium",
+    "status": "Active",
+    "score": {
+     "base": "5.300000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "5.300000",
+      "vector": {
+       "attack_vector": "LOCAL",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "pip",
+     "version": "23.0",
+     "condition": "Package less than 23.3"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-11T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-2002",
+    "severity": "Medium",
+    "status": "Active",
+    "score": {
+     "base": "4.400000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "4.400000",
+      "vector": {
+       "attack_vector": "LOCAL",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "pip",
+     "version": "23.0",
+     "condition": "Package less than 24.0"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-12T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-3001",
+    "severity": "High",
+    "status": "Active",
+    "score": {
+     "base": "7.800000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "7.800000",
+      "vector": {
+       "attack_vector": "LOCAL",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "Example Archiver",
+     "version": "9.1",
+     "condition": "Package less than 9.2"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-11-14T09:00:00.000+0000",
+   "rule": "23504",
+   "vulnerability": {
+    "cve": "CVE-2099-3001",
+    "severity": "High",
+    "status": "Solved",
+    "score": {
+     "base": "7.800000",
+     "version": "3.1"
+    },
+    "cvss": {
+     "cvss3": {
+      "base_score": "7.800000",
+      "vector": {
+       "attack_vector": "LOCAL",
+       "privileges_required": "NONE",
+       "user_interaction": "NONE"
+      }
+     }
+    },
+    "package": {
+     "name": "Example Archiver",
+     "version": "9.1",
+     "condition": "Package less than 9.2"
+    }
+   }
+  }
+ ],
+ "problems": [],
+ "sources": {
+  "api": "synthetic",
+  "indexer": "synthetic",
+  "alerts": "synthetic"
+ }
+}

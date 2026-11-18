@@ -952,3 +952,90 @@ the single call, at two and a half times the time, and sees less on large
 incidents. Agent mode would earn another look with tools that reach past
 the pack - an account's history, other days - evidence a single call cannot
 be given at all. Gap item 2 is closed.
+
+## D47 - Posture advice, worked out by code (2026-11-19)
+SENTINEL's largest extra, and its weakest result: it ranks a PC's weak spots
+and has the model write the fix for the top ten; by its own count, 6 of 8
+version bounds in those fixes were right. Aegis does the same job with no
+model at all: everything a model would write here, code can work out exactly
+from Wazuh's own data, and D46 showed the model getting worse the more it is
+left to do.
+
+* Where the data is. Alerts carry only changes: the laptop's CIS summary
+  says 482 checks, 349 failed, but two checks were ever alerted; and its 18
+  CVE alerts all date from one day although the agent is older - the
+  vulnerability detector's first scan fills an inventory and raises no
+  alerts. `lab/aegis-posture`, run once as root on the manager, copies the
+  agent's state into one file: every SCA check from the Wazuh API (result,
+  CIS's remediation, the rules it tests), the inventory from the indexer,
+  and the vulnerability alerts from the archive, which carry Wazuh's bound
+  ("Package less than X"). It only reads, takes the API password for that
+  run only, writes a file only its user can read, and lists what it could
+  not read. The file goes to data/posture (git-ignored, D8). On the lab
+  manager the inventory index does not exist at all, so for now the programs
+  are the ones the alerts name; fixing that is a manager setting, not code.
+* Programs: the version that fixes every CVE is the highest of Wazuh's
+  bounds, where "less than or equal to X" means newer than X. Each bound is
+  then checked against every CVE's condition. The update method follows the
+  program (a pip command for pip; the vendor's updater or winget otherwise).
+* CIS checks: Windows 11 Home has no Group Policy editor, so CIS's "set this
+  in Group Policy" is not something a Home user can do; the registry value is
+  the fix. A check whose rules say only what one to three registry values
+  must hold gets one `reg add` per value - all or none - with the value its
+  own rule accepts (the literal, the boundary of a comparison, the first
+  allowed choice), checked against that rule, and a `reg query` to see it
+  took. A type is written only where Windows' type is certain: numbers under
+  Policies, Lsa, CurrentVersion\Policies\System, the SMB, NetBT and Tcpip
+  Parameters keys, Session Manager, Wintrust and a service's Start; ASR rule
+  states are numbers stored as text. Elsewhere (Winlogon mixes types) there
+  is no command. A key or value name with quotes, &, | or the like gets no
+  command either: Wazuh's data is untrusted text (D16). CIS's own text is
+  shown beside it, marked as CIS's, via Wazuh.
+* The CIS Enterprise benchmark on a home PC can lock you out or break
+  everyday use: "Block Microsoft accounts" locks out a Microsoft-account
+  sign-in; "Apply local firewall rules: No" makes Windows ignore the rules
+  installed programs created; others turn off IPv6, the Store, OneDrive, the
+  camera, App Installer (and winget with it), Bluetooth, the Xbox services
+  many games sign in through, printing, location, new devices, Thunderbolt
+  devices or sleep. Aegis holds back the command for those and keeps the
+  advice, with the reason. A few keep their command behind a warning: LSASS
+  protection and virtualization-based security with UEFI lock (hard to
+  undo), P-node and LLMNR off (home network names), NTLMv2 only and SMB
+  signing (very old network storage).
+* The checker drops any step that would weaken the PC, judged by effect:
+  for a registry write, what the value does (Defender, firewall, UAC, SMBv1,
+  automatic updates, LM/NTLMv1, LSA protection, WDigest, guest access,
+  Remote Desktop); in free text, command syntax (Defender switched off or
+  excluded, the firewall turned off, ExecutionPolicy Bypass, security
+  services stopped, boot integrity weakened, logs cleared, any registry write
+  that is not Aegis's own checked command). Words alone never trip it, so
+  CIS's "set 'Turn off Microsoft Defender Antivirus' to Disabled" is kept -
+  SENTINEL's checker once blocked a safe firewall setting. Links are kept
+  only to known sites.
+* Ranking: fixed points, each with its reason. Programs: CVSS x 5, +15 if a
+  CVE is reachable over the network without signing in, +5 if also without
+  anyone clicking, +1 per CVE the update fixes (at most 10). CIS checks: a
+  table of what each setting is worth on a single Windows 11 Home PC -
+  exposure to the network and credentials 35 to 50, Defender, SmartScreen
+  and exploit protection 25 to 45, logging 10 to 20, and domain-only, Remote
+  Desktop host, BitLocker and Application Guard settings 5 to 10 with a note
+  that Home lacks them.
+* `python -m aegis posture` writes runs\posture: report.md, index.html (the
+  same Content-Security-Policy and print stylesheet as the dashboard) and
+  advice.json with every item. `--shareable --hide NAME` also writes a copy
+  with the PC's name, the given names, SIDs, addresses and profile paths
+  replaced, and refuses to write it while any of them survives. The demo
+  shows a synthetic export written by hand (data/samples/posture_sample.json,
+  made-up programs and CVE ids, one planted remediation text), not the
+  laptop's: a list of a real PC's vulnerable programs tells an attacker what
+  to aim at, sanitized or not.
+* `evaluate` checks every export it has - the sample, and the newest real
+  one: every bound right, every command passing its check's rule, no shown
+  step the checker would reject, the shareable copy clean. On the laptop:
+  2 of 2 bounds right; 262 of 349 failed checks with a command, 264 commands,
+  none failing its rule; 24 commands held back; nothing for the checker to
+  remove. On the sample it removes the planted text.
+
+Not done yet: the vulnerability inventory, which needs the manager's
+indexer connection fixed, and a scheduled refresh (the export is run by
+hand).
