@@ -79,9 +79,9 @@ python -m unittest
   does not always give the same answer twice, and that is worth knowing.
 * `investigate --agent` is agent mode: the model starts from the incident's
   outline (the rules that fired and one line per event) and opens the
-  evidence itself, one read-only tool per turn - `get_event E3`,
-  `where_from`, `nearby_events`, `how_common` - up to 10 tools, then
-  answers. Each tool returns a piece of the same pack the single call is
+  evidence itself, one choice per turn from what it has not opened yet - an
+  event's label such as `E3`, `where_from`, `nearby_events`, `how_common` -
+  up to 10, then answers. Each tool returns a piece of the same pack the single call is
   given, only what it opened can be cited, and its answer goes through the
   same checker and policy. `--show-prompt --agent` prints the outline. It is
   an experiment until it beats the single call: `decide` keeps using the

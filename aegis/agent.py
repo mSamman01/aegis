@@ -2,14 +2,18 @@
 
 The single call (aegis.investigate) shows the model the whole evidence pack
 at once. Here the model starts from the incident's outline - the rules that
-fired and the first line of each event - and asks for the rest, one tool
-per turn:
+fired and the first line of each event - and opens the rest itself, one
+choice per turn:
 
-    get_event E3    everything the pack shows about one event (or a group: G2)
+    E3 (or G2)      everything the pack shows about one event (or one group)
     where_from      which programs outside the incident started its processes
     nearby_events   the other events on the host just before and after (C1 ...)
     how_common      how often these rules and programs appear on the host
     answer          stop looking and write the answer
+
+Each turn's choice comes from a list of what is still unopened (agent2,
+D45): the first version let the model name a tool and a label separately,
+and on its first real run it asked for nearby_events "of E6" ten times.
 
 Every tool returns a section of the very pack the single call is given
 (aegis.evidence.PackParts), word for word and under the same labels, so the
@@ -17,9 +21,9 @@ two modes differ only in who chooses what to read, and in what order.
 
 No tool changes anything. Each one returns text that code has already
 built from the loaded events; there is no other function the model can
-reach. The step's JSON schema lists only these tools, code checks the name
-again, and anything else gets a refusal and costs the model one of its
-tool calls. At most MAX_TOOL_CALLS are allowed.
+reach. The step's JSON schema lists only what is still unopened, code checks
+the choice again, and anything else gets a refusal and costs the model one
+of its tool calls. At most MAX_TOOL_CALLS are allowed.
 
 The final answer has the single call's shape and goes through the single
 call's checker (investigate.check_answer) unchanged. Only evidence the
@@ -62,12 +66,13 @@ from aegis.llm import LLMError, chat
 
 # The version of the agent's protocol (its instructions, tools and messages). The
 # rules for judging evidence are the single call's, so prompt_version stays theirs.
-MODE = "agent1"
+MODE = "agent2"  # agent1 (D44) named a tool and a label separately and looped on its first run (D45)
 MAX_TOOL_CALLS = 10
 STEP_PREDICT = 256  # output allowance for one step: a sentence and a tool name
 ANSWER_PREDICT = 1500  # the same allowance as the single call's answer
 TOOLS = ("get_event", "where_from", "nearby_events", "how_common")
 DONE = "answer"
+STEP_KEY = "02_open"  # the step's choice; a request whose schema has it asks for a step
 
 
 def _replace_once(text: str, old: str, new: str) -> str:
@@ -89,21 +94,21 @@ happened and decide what it most likely is.
 
 You do not see the evidence all at once. You are shown the incident's outline:
 the rules that fired and one line per event. You open the evidence yourself,
-one piece per turn, with these tools:
-  get_event      everything recorded about one event: give its label, such as
-                 E3 (or a group's label, such as G2, where events are grouped)
+one piece per turn. Each turn, choose one of these:
+  E3             an event's label: everything recorded about that event
+                 (where events are grouped, a group's label, such as G2)
   where_from     which programs outside the incident started its processes
-  nearby_events  other events on this host just before and after the incident
-                 (labelled C1, C2 ...)
+  nearby_events  all the other events on this host within minutes of the
+                 incident, at once (labelled C1, C2 ...)
   how_common     how often these rules and programs appear on this host
   answer         stop looking; you are then asked for your final answer
-Each turn, reply with one JSON object and nothing else:
+Each one can be opened once. After every result you are told what is not
+opened yet. Each turn, reply with one JSON object and nothing else:
 {{"01_next": "what you want to find out with this step, or why you have seen enough",
- "02_tool": "get_event|where_from|nearby_events|how_common|answer",
- "03_label": "the label for get_event, such as E3; otherwise an empty string"}}
+ "02_open": "E3|where_from|nearby_events|how_common|answer"}}
 Only evidence you have opened can be cited: a line of the outline is not
-evidence. You can use at most {MAX_TOOL_CALLS} tools. Open what you need to judge the
-incident, then choose answer.
+evidence. You can open at most {MAX_TOOL_CALLS} things. Open what you need to judge
+the incident, then choose answer.
 """
 
 AGENT_SYSTEM_PROMPT = _replace_once(SYSTEM_PROMPT, _SINGLE_INTRO, _AGENT_INTRO)
@@ -120,15 +125,12 @@ AGENT_SYSTEM_PROMPT = _replace_once(
 )
 
 
-def step_schema(tools: Sequence[str]) -> dict:
+def step_schema(choices: Sequence[str]) -> dict:
+    """One choice from what is still unopened, so the same request cannot be made twice."""
     return {
         "type": "object",
-        "properties": {
-            "01_next": {"type": "string"},
-            "02_tool": {"type": "string", "enum": [*tools, DONE]},
-            "03_label": {"type": "string"},
-        },
-        "required": ["01_next", "02_tool", "03_label"],
+        "properties": {"01_next": {"type": "string"}, STEP_KEY: {"type": "string", "enum": list(choices)}},
+        "required": ["01_next", STEP_KEY],
     }
 
 
@@ -168,6 +170,18 @@ class Desk:
     def available(self) -> tuple:
         return tuple(tool for tool in TOOLS if tool != "where_from" or self.parts.origins)
 
+    def unopened(self) -> list:
+        """What the model can still open: blocks (E3 or G2), then the other sections."""
+        return ([block.label for block in self.parts.blocks if block.label not in self.open]
+                + [tool for tool in self.available() if tool != "get_event" and tool not in self.open])
+
+    def choose(self, choice: str) -> ToolResult:
+        """A step's choice: a label opens that event or group; a name is one of the other tools."""
+        text = choice.strip()
+        if re.fullmatch(r"[EGCK]\d{1,6}", text.upper()):
+            return self.use("get_event", text)
+        return self.use(text.lower(), "")
+
     def outline(self, max_tools: int) -> str:
         parts = self.parts
         lines = list(parts.head)
@@ -184,11 +198,10 @@ class Desk:
                 lines += block.lines[:1]
         if parts.hidden:
             lines.append(parts.hidden)
-        tools = self.available()
-        lines += ["", "TOOLS FOR THIS INCIDENT: " + ", ".join((*tools, DONE))]
-        if "where_from" not in tools:
+        lines += ["", "YOU CAN OPEN: " + ", ".join(self.unopened()) + f"; or choose {DONE}"]
+        if "where_from" not in self.available():
             lines.append("(where_from is left out: no process in this incident has a known parent.)")
-        lines.append(f"You can use {max_tools} tools. Choose your first step.")
+        lines.append(f"You can open {max_tools} things. Choose your first step.")
         text = "\n".join(lines)
         self.texts.append(text)
         return text
@@ -199,8 +212,8 @@ class Desk:
             return self._get_event(label)
         if tool not in TOOLS:
             shown = _clip(tool, 40) or "(empty)"
-            return ToolResult(f"There is no tool called {shown!r}. The tools are: "
-                              f"{', '.join((*self.available(), DONE))}.", f"{shown} (not a tool)")
+            return ToolResult(f"There is nothing called {shown!r} to open. You can open: "
+                              f"{', '.join(self.unopened())}; or choose {DONE}.", f"{shown} (not a tool)")
         if tool in self.open:
             return ToolResult(f"{tool} is already shown above.", f"{tool} (again)")
         parts = self.parts
@@ -404,7 +417,10 @@ def investigate_agent(
         if used >= max_tools:
             reason = "limit"
             break
-        request = _request(model, messages, step_schema(desk.available()), num_ctx, STEP_PREDICT)
+        if not desk.unopened():
+            reason = "all"
+            break
+        request = _request(model, messages, step_schema([*desk.unopened(), DONE]), num_ctx, STEP_PREDICT)
         answer = talk(request)
         answers.append(answer)
         content = _content(answer)
@@ -417,12 +433,14 @@ def investigate_agent(
             reason = "unusable"
             break
         step = {re.sub(r"^\d+_", "", str(key)): value for key, value in step.items()}
-        tool = str(step.get("tool") or "").strip().lower()
-        if tool == DONE:
+        choice = str(step.get("open") or "").strip()
+        if choice.lower() == DONE:
             break
         used += 1
-        result = desk.use(tool, str(step.get("label") or ""))
-        reply = f"{result.text}\n\nTools left: {max_tools - used}."
+        result = desk.choose(choice)
+        left = [label for label in desk.unopened() if label != result.done]
+        reply = (f"{result.text}\n\nYou can open {max_tools - used} more. "
+                 + (f"Not opened yet: {', '.join(left)}." if left else f"Everything is open: choose {DONE}."))
         if _estimated_tokens(messages + [{"role": "user", "content": reply}]) + STEP_PREDICT + ANSWER_PREDICT \
                 + 120 > num_ctx:
             steps.append(f"{result.call} (no room)")
@@ -432,7 +450,8 @@ def investigate_agent(
         steps.append(result.call)
         messages.append({"role": "user", "content": reply})
 
-    opening = {"answer": "", "limit": f"You have used all {max_tools} tools. ",
+    opening = {"answer": "", "all": "You have opened everything. ",
+               "limit": f"You have opened as much as you can ({max_tools}). ",
                "room": "There is no room left in this conversation for more evidence. ",
                "unusable": "Your last reply was not a step in the format asked for. "}[reason]
     messages.append({"role": "user", "content": opening + "Write your final answer now: one JSON object with "

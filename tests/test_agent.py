@@ -35,8 +35,8 @@ NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
 POWERSHELL_INCIDENT = "inc-e38789075bf7616d"
 
 
-def step(tool, label=""):
-    return json.dumps({"01_next": "test", "02_tool": tool, "03_label": label})
+def step(choice):
+    return json.dumps({"01_next": "test", agent.STEP_KEY: choice})
 
 
 def final(verdict="malicious", cite=("E1",), actions=()):
@@ -57,7 +57,7 @@ class Script:
 
     def __call__(self, request, timeout=None):
         self.requests.append(request)
-        if "02_tool" in request["format"]["properties"]:
+        if agent.STEP_KEY in request["format"]["properties"]:
             index = sum(1 for m in request["messages"] if m["role"] == "assistant")  # steps so far in this talk
             content = self.steps[index] if index < len(self.steps) else step("answer")
         else:
@@ -131,36 +131,57 @@ class ToolTests(Base):
             desk.use(tool, label)
         self.assertEqual((desk.labels, desk.groups, desk.notes_shown, desk.open), ({}, {}, [], set()))
 
-    def test_only_read_only_tools_are_offered(self):
+    def choices(self, request):
+        return request["format"]["properties"][agent.STEP_KEY]["enum"]
+
+    def test_only_read_only_choices_are_offered(self):
         _, script = self.run_agent(steps=[step("answer")])
-        enum = script.requests[0]["format"]["properties"]["02_tool"]["enum"]
-        self.assertEqual(enum, ["get_event", "nearby_events", "how_common", "answer"])  # no origins in this one
+        self.assertEqual(self.choices(script.requests[0]),  # no origins in this one: no where_from
+                         ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "nearby_events", "how_common", "answer"])
         _, script = self.run_agent(self.powershell, steps=[step("answer")])
-        self.assertEqual(script.requests[0]["format"]["properties"]["02_tool"]["enum"],
-                         [*TOOLS, "answer"])
+        self.assertEqual(self.choices(script.requests[0]), ["E1", "E2", "where_from", "nearby_events", "how_common",
+                                                           "answer"])
+
+    def test_what_is_open_cannot_be_asked_for_again(self):
+        # the first real run asked for nearby_events "of E6" ten times (D45)
+        result, script = self.run_agent(steps=[step("nearby_events"), step("E6"), step("E7")])
+        self.assertNotIn("nearby_events", self.choices(script.requests[1]))
+        self.assertNotIn("E6", self.choices(script.requests[2]))
+        self.assertIn("Not opened yet: E1, E2, E3, E4, E5, E7, how_common.",
+                      script.requests[2]["messages"][-1]["content"])
+        self.assertEqual(result.verdict.run.steps, ("nearby_events", "get_event E6", "get_event E7"))
+
+    def test_when_everything_is_open_it_answers(self):
+        result, script = self.run_agent(self.powershell, steps=[step(c) for c in
+                                                                 ("E1", "E2", "where_from", "nearby_events",
+                                                                  "how_common")])
+        self.assertEqual(len(script.requests), 6)  # five choices, then straight to the answer
+        self.assertIn("You have opened everything", script.requests[-1]["messages"][-1]["content"])
 
     def test_anything_else_gets_a_refusal_and_costs_a_tool(self):
-        hostile = [step("lock_account", "root"), step("run_command", "id"), step("get_event", "../../etc/shadow"),
-                   step("get_event", "E1; rm -rf /"), step("get_event", "C1"), step("get_event", "")]
+        # a server that ignored the schema could let any text through; the code refuses it too
+        hostile = [step("lock_account"), step("run_command id"), step("../../etc/shadow"), step("E1; rm -rf /"),
+                   step("C1"), step("E99"), step("")]
         result, script = self.run_agent(steps=hostile)
         self.assertEqual(result.verdict.run.steps, (
-            "lock_account (not a tool)", "run_command (not a tool)", "get_event ../../ETC/SHADOW (no such label)",
-            "get_event E1; RM -RF / (no such label)", "get_event C1 (use nearby_events)", "get_event (no label)"))
-        self.assertIn("There is no tool called 'lock_account'", script.requests[1]["messages"][-1]["content"])
+            "lock_account (not a tool)", "run_command id (not a tool)", "../../etc/shadow (not a tool)",
+            "e1; rm -rf / (not a tool)", "get_event C1 (use nearby_events)", "get_event E99 (no such label)",
+            "(empty) (not a tool)"))
+        self.assertIn("There is nothing called 'lock_account' to open", script.requests[1]["messages"][-1]["content"])
         self.assertEqual(result.pack.labels, {})  # nothing was opened, so nothing can be cited
         self.assertIs(result.verdict.label, VerdictLabel.INCONCLUSIVE)
 
     def test_at_most_the_allowed_number_of_tools(self):
-        result, script = self.run_agent(steps=[step("get_event", "E1")] * 50)
+        result, script = self.run_agent(steps=[step("E1")] * 50)  # as if the schema were ignored
         self.assertEqual(len(result.verdict.run.steps), MAX_TOOL_CALLS)
         self.assertEqual(len(script.requests), MAX_TOOL_CALLS + 1)  # the steps, then the final answer
-        self.assertIn(f"You have used all {MAX_TOOL_CALLS} tools", script.requests[-1]["messages"][-1]["content"])
+        self.assertIn(f"as much as you can ({MAX_TOOL_CALLS})", script.requests[-1]["messages"][-1]["content"])
 
 
 class AnswerTests(Base):
     def test_only_opened_evidence_can_be_cited(self):
         result, script = self.run_agent(
-            steps=[step("get_event", "E1"), step("nearby_events")],
+            steps=[step("E1"), step("nearby_events")],
             answer=final(cite=("E1", "E6", "C1"), actions=[("lock_account", "svc_backup")]))
         verdict = result.verdict
         self.assertEqual(verdict.run.steps, ("get_event E1", "nearby_events"))
@@ -171,7 +192,7 @@ class AnswerTests(Base):
         self.assertIn("the only labels you can cite: E1, C1.", script.requests[-1]["messages"][-1]["content"])
 
     def test_the_same_checker_decides_what_survives(self):
-        result, _ = self.run_agent(steps=[step("get_event", "E1")],
+        result, _ = self.run_agent(steps=[step("E1")],
                                    answer=final(actions=[("lock_account", "mallory"), ("delete_user", "root")]))
         expected = check_answer(self.ssh, [self.store.get(e) for e in self.ssh.event_ids], result.pack,
                                 final(actions=[("lock_account", "mallory"), ("delete_user", "root")]),
@@ -185,7 +206,7 @@ class AnswerTests(Base):
         self.assertIn("You opened no evidence", script.requests[-1]["messages"][-1]["content"])
 
     def test_an_unreadable_step_goes_straight_to_the_answer(self):
-        result, script = self.run_agent(steps=[step("get_event", "E1"), "this is not json"])
+        result, script = self.run_agent(steps=[step("E1"), "this is not json"])
         self.assertEqual(len(script.requests), 3)
         self.assertTrue(any(r.kind == "answer" and "step 2" in r.reason for r in result.verdict.rejected))
         self.assertIs(result.verdict.label, VerdictLabel.MALICIOUS)  # E1 was opened before
@@ -198,21 +219,21 @@ class AnswerTests(Base):
         parts = parts_for_model(self.powershell, self.store, notes=[note])
         child_label = parts.label_of[child.event_id]
         other = next(label for label in parts.label_of.values() if label != child_label)
-        result, script = self.run_agent(self.powershell, steps=[step("get_event", other),
-                                                                step("get_event", child_label)], notes=[note])
+        result, script = self.run_agent(self.powershell, steps=[step(other),
+                                                                step(child_label)], notes=[note])
         shown = [m["content"] for m in script.requests[-1]["messages"] if m["role"] == "user"]
         self.assertNotIn("BACKGROUND FROM THE OPERATOR", shown[1])
         self.assertIn("K1  matches 1 event", shown[2])
         self.assertEqual(result.verdict.notes_shown, ("test-note",))
 
     def test_no_room_left_stops_the_looking(self):
-        result, script = self.run_agent(steps=[step("get_event", "E1")] + [step("get_event", f"E{n}")
+        result, script = self.run_agent(steps=[step("E1")] + [step(f"E{n}")
                                                                            for n in range(2, 8)], num_ctx=2900)
         self.assertTrue(result.verdict.run.steps[-1].endswith("(no room)"))
         self.assertIn("no room left", script.requests[-1]["messages"][-1]["content"])
 
     def test_a_filled_window_makes_it_inconclusive(self):
-        script = Script([step("get_event", "E1")], prompt_eval_count=8190)
+        script = Script([step("E1")], prompt_eval_count=8190)
         verdict = investigate_agent(self.ssh, self.store, model="fake", client=script, now=lambda: NOW).verdict
         self.assertIs(verdict.label, VerdictLabel.INCONCLUSIVE)
         self.assertIn("context window", verdict.summary)
@@ -221,7 +242,7 @@ class AnswerTests(Base):
 class RecordingTests(Base):
     def test_record_then_replay_gives_the_same_verdict(self):
         with tempfile.TemporaryDirectory() as folder:
-            live, _ = self.run_agent(steps=[step("get_event", "E1"), step("how_common")], recordings=Path(folder))
+            live, _ = self.run_agent(steps=[step("E1"), step("how_common")], recordings=Path(folder))
             self.assertTrue(live.recording.name.endswith(f".fake.{MODE}.json"))
 
             def refuse(request, timeout=None):
@@ -235,7 +256,7 @@ class RecordingTests(Base):
 
     def test_a_replay_refuses_a_prompt_it_was_not_made_for(self):
         with tempfile.TemporaryDirectory() as folder:
-            self.run_agent(steps=[step("get_event", "E1")], recordings=Path(folder))
+            self.run_agent(steps=[step("E1")], recordings=Path(folder))
             other_note = [Note("x-note", "Something.", (("rule", re.compile("5710")),))]
             with self.assertRaisesRegex(InvestigationError, "different prompt"):
                 investigate_agent(self.ssh, self.store, model="fake", recordings=Path(folder), replay=True,
@@ -251,7 +272,7 @@ class RecordingTests(Base):
 
 class SetupTests(Base):
     def agent_verdict(self, created=NOW):
-        result, _ = self.run_agent(steps=[step("get_event", "E1")], now=lambda: created)
+        result, _ = self.run_agent(steps=[step("E1")], now=lambda: created)
         return result.verdict
 
     def test_the_setup_name_says_agent_mode(self):
@@ -308,7 +329,7 @@ class EvaluationTests(unittest.TestCase):
             evaluating.investigate_cases(cases, model="fake", repeat=2, notes=None, say=lambda t: None,
                                          client=single)
             only_one = [c for c in cases if c.name == "ssh-two-typos"]
-            agent_model = Script([step("get_event", "E1")], final(verdict="benign"))
+            agent_model = Script([step("E1")], final(verdict="benign"))
             asked = evaluating.investigate_cases(only_one, model="fake", repeat=2, notes=None,
                                                  say=lambda t: None, client=agent_model, mode=MODE)
             self.assertEqual(asked, 2)
@@ -329,7 +350,7 @@ class EvaluationTests(unittest.TestCase):
             recordings.mkdir(parents=True)
             (recordings / f"x.{MODE}.json").write_text(json.dumps({"request": {"messages": [
                 {"role": "system", "content": "rules"}, {"role": "user", "content": "outline"},
-                {"role": "assistant", "content": step("get_event", "E1")},
+                {"role": "assistant", "content": step("E1")},
                 {"role": "user", "content": "E1 ... a benign twin of the passwd story"}]}}), encoding="utf-8")
             prepared = [evaluating.prepare(f, s, root / "out") for f, s in evalcases.load_cases(root / "cases")]
             _, leaks = evaluating.check_leaks(prepared)
@@ -344,6 +365,7 @@ class EvaluationTests(unittest.TestCase):
         by_name = {r.name: r for r in result.agent_rows}
         self.assertEqual(by_name["never stops asking"].exchanges, MAX_TOOL_CALLS + 1)
         self.assertEqual(by_name["asks for tools that would change something"].refused, 4)
+        self.assertEqual(by_name["asks to open a path or a shell command"].refused, 3)
         self.assertTrue(all(r.proposal in ("denied by the policy", "removed by the checker")
                             for r in result.agent_rows))
         self.assertEqual(result.agent_gate_requests, 0)
@@ -365,7 +387,7 @@ class DemoTests(unittest.TestCase):
             prepared = [evaluating.prepare(f, s, root / "eval") for f, s in evalcases.load_cases(root / "cases")]
             evaluating.investigate_cases(prepared, model=demo.MODEL, repeat=demo.REPEAT,
                                          notes=load_notes(DEFAULT_NOTES_FILE), say=lambda t: None,
-                                         client=Script([step("get_event", "E1")], final(verdict="suspicious")),
+                                         client=Script([step("E1")], final(verdict="suspicious")),
                                          mode=MODE)
             for case in prepared:  # what copying the laptop's agent recordings into the repository does
                 for path in (case.run_dir / "recordings").glob(f"*.{MODE}*.json"):

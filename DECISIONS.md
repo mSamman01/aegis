@@ -857,3 +857,30 @@ and `evaluate --investigate --agent` now ask the other way:
 
 Not measured yet: asking takes one request per tool plus the answer, about
 123 runs on the laptop.
+
+## D45 - The first agent run looped; agent2 chooses from what is unopened (2026-11-18)
+The smoke run on the sample's SSH attack (qwen3:4b, agent1) wrote a sensible
+aim - see what happened right after the successful login, E6 - and then
+asked for `nearby_events` with the label E6, reading it as "the events near
+E6". It sent that same step nine more times; "already shown above" did not
+move it. All 10 tools were spent and no event was opened, so the checker
+removed every citation, the verdict became inconclusive, and its proposal
+(`lock_account ssh`) was refused. The safety held; as an investigator it
+did nothing. Each step took about 1.3 s, the whole run 28 s.
+
+Agent2 makes both mistakes impossible instead of explaining them better:
+
+* One choice per turn, from a list. The step is `{"01_next": ...,
+  "02_open": ...}`, and the schema allows only what is still unopened: the
+  event (or group) labels, `where_from`, `nearby_events`, `how_common`, and
+  `answer`. A tool and a label cannot be mixed up, because there is no
+  separate label, and nothing can be asked for twice. Code still refuses
+  both, and anything else, if a server ignores the schema; the probe still
+  sends such requests.
+* After every result the model is told what is not opened yet; when
+  everything is open it goes straight to its answer.
+* This takes away only choices that would return nothing new. It still does
+  not tell the model what to open.
+
+The mode is now `agent2`. The agent1 answer stays in runs\sample as a
+record; an agent1 recording cannot be replayed as agent2.
