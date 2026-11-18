@@ -200,5 +200,5 @@ No case name or label reached any of the 76 prompts checked.
    worked out by code, with no model: the version that fixes every CVE, and a
    checked `reg add` per CIS setting. A checker drops anything that would
    weaken the PC; commands that could lock you out or break everyday use are
-   held back. `evaluate` checks every bound and command. Still to do: the
-   vulnerability inventory, which needs the manager's indexer connection.
+   held back. `evaluate` checks every bound and command. The lab manager's
+   inventory had to be switched on first (its indexer address and login).

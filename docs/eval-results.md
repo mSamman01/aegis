@@ -154,10 +154,9 @@ All of it worked out by code from Wazuh's data, with no model (D47).
 | failed checks with an exact registry command | 262, with 264 commands; none fails its check's own rule |
 | commands held back (they can lock you out or break everyday use) | 24 |
 | steps the checker removed (they would weaken the PC) | 0 |
-| vulnerable programs, from the alerts | 2, with 18 active CVEs; the fixing version is right for 2 of 2 |
+| vulnerable programs, from Wazuh's inventory | 5, with 36 active CVEs; the fixing version is right for 5 of 5 (six bounds of one program are build dates, reported as such rather than compared) |
 
-The vulnerability inventory is missing on the lab manager (no inventory
-index), so only programs that raised alerts are counted. The
+The
 [demo](https://msamman01.github.io/aegis/posture/index.html) shows the same
 advice for a synthetic PC, with a planted remediation text that the checker
 removes.

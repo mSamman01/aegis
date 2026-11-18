@@ -971,13 +971,25 @@ left to do.
   and the vulnerability alerts from the archive, which carry Wazuh's bound
   ("Package less than X"). It only reads, takes the API password for that
   run only, writes a file only its user can read, and lists what it could
-  not read. The file goes to data/posture (git-ignored, D8). On the lab
-  manager the inventory index does not exist at all, so for now the programs
-  are the ones the alerts name; fixing that is a manager setting, not code.
-* Programs: the version that fixes every CVE is the highest of Wazuh's
-  bounds, where "less than or equal to X" means newer than X. Each bound is
-  then checked against every CVE's condition. The update method follows the
-  program (a pip command for pip; the vendor's updater or winget otherwise).
+  not read. The file goes to data/posture (git-ignored, D8). The first
+  export found no inventory index on the lab manager at all: its indexer
+  connection pointed at https://0.0.0.0:9200 (an address to listen on, not
+  one to reach; the indexer answers on 192.168.56.105, which its certificate
+  names), and the manager's keystore had no indexer login. With both set and
+  the manager restarted, the inventory appeared: 36 CVEs for the laptop,
+  against 18 in the alerts.
+* Programs: the inventory is the current state; the alerts add only the
+  CVSS vector it lacks (without a vector, reachability is reported as
+  unknown and earns no points). The version that fixes every CVE is the
+  highest of Wazuh's bounds, where "less than or equal to X" and "equal to
+  X" mean newer than X; each bound is then checked against every CVE's
+  condition. A bound given as a build date (NVD does that for programs such
+  as Steam, which keeps one version number in Windows' list for years while
+  it updates itself) is not compared with a dotted version: the advice says
+  so, and that these CVEs may be false alarms, instead of naming a "version"
+  that is a date. A score of -1 means NVD has not scored the CVE yet. The
+  update method follows the package type (an exact pip command for Python
+  packages; the vendor's updater or winget otherwise).
 * CIS checks: Windows 11 Home has no Group Policy editor, so CIS's "set this
   in Group Policy" is not something a Home user can do; the registry value is
   the fix. A check whose rules say only what one to three registry values
@@ -1032,10 +1044,9 @@ left to do.
 * `evaluate` checks every export it has - the sample, and the newest real
   one: every bound right, every command passing its check's rule, no shown
   step the checker would reject, the shareable copy clean. On the laptop:
-  2 of 2 bounds right; 262 of 349 failed checks with a command, 264 commands,
-  none failing its rule; 24 commands held back; nothing for the checker to
-  remove. On the sample it removes the planted text.
+  5 programs with 36 CVEs, every comparable bound right (one program's six
+  dated bounds reported as such); 262 of 349 failed checks with a command,
+  264 commands, none failing its rule; 24 commands held back; nothing for the
+  checker to remove. On the sample it removes the planted text.
 
-Not done yet: the vulnerability inventory, which needs the manager's
-indexer connection fixed, and a scheduled refresh (the export is run by
-hand).
+Not done yet: a scheduled refresh (the export is run by hand).

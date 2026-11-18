@@ -2,7 +2,7 @@
  "aegis_posture_export": 1,
  "agent_id": "001",
  "made_at": "2026-11-15T12:00:00Z",
- "_about": "Synthetic posture export, written by hand for tests and the demo. Not from a real PC. Check 90013 carries a planted hostile remediation text; the CVE ids are not real (CVE-2099-...).",
+ "_about": "Synthetic posture export, written by hand for tests and the demo. Not from a real PC. Check 90013 carries a planted hostile remediation text; the CVE ids are not real (CVE-2099-...). The archiver's CVE was solved and is not in the inventory.",
  "agent": {
   "id": "001",
   "name": "win-laptop",
@@ -501,7 +501,224 @@
    }
   ]
  },
- "vulnerabilities": [],
+ "vulnerabilities": [
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Browser",
+    "version": "118.0.2",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-1001",
+    "severity": "Critical",
+    "score": {
+     "base": 9.8,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than 118.0.5",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-1001"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Browser",
+    "version": "118.0.2",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-1002",
+    "severity": "Medium",
+    "score": {
+     "base": 6.1,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than or equal to 118.0.7",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-1002"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Browser",
+    "version": "118.0.2",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-1003",
+    "severity": "High",
+    "score": {
+     "base": 7.5,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than 119.0",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-1003"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "pip",
+    "version": "23.0",
+    "type": "pypi"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-2001",
+    "severity": "Medium",
+    "score": {
+     "base": 5.3,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than 23.3",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-2001"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "pip",
+    "version": "23.0",
+    "type": "pypi"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-2002",
+    "severity": "Medium",
+    "score": {
+     "base": 4.4,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than 24.0",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-2002"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Launcher",
+    "version": "2.1.0.0",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-4001",
+    "severity": "High",
+    "score": {
+     "base": 7.0,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package equal to 2.1.0.0",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-4001"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Launcher",
+    "version": "2.1.0.0",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-4002",
+    "severity": "High",
+    "score": {
+     "base": 7.8,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than or equal to 2019-08-16",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-4002"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "Example Launcher",
+    "version": "2.1.0.0",
+    "type": "win"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-4003",
+    "severity": "",
+    "score": {
+     "base": -1.0,
+     "version": "3.1"
+    },
+    "under_evaluation": true,
+    "scanner": {
+     "condition": "Package less than 2015-05-13",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-4003"
+    }
+   }
+  },
+  {
+   "agent": {
+    "id": "001",
+    "name": "win-laptop"
+   },
+   "package": {
+    "name": "requests",
+    "version": "2.25.0",
+    "type": "pypi"
+   },
+   "vulnerability": {
+    "id": "CVE-2099-5001",
+    "severity": "Medium",
+    "score": {
+     "base": 6.1,
+     "version": "3.1"
+    },
+    "under_evaluation": false,
+    "scanner": {
+     "condition": "Package less than 2.31.0",
+     "reference": "https://cti.wazuh.com/vulnerabilities/cves/CVE-2099-5001"
+    }
+   }
+  }
+ ],
  "vulnerability_alerts": [
   {
    "timestamp": "2026-11-10T09:00:00.000+0000",

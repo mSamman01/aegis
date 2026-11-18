@@ -53,12 +53,31 @@ class BoundTests(unittest.TestCase):
 
     def test_every_bound_in_the_sample_fixes_every_cve(self):
         posture = P.load(SAMPLE)
-        self.assertEqual({p.name: p.bound.text() for p in posture.programs},
-                         {"Example Browser": "version 119.0 or newer", "pip": "version 24.0 or newer"})
+        bounds = {p.name: p.bound.text() for p in posture.programs}
+        self.assertEqual(bounds["Example Browser"], "version 119.0 or newer")
+        self.assertEqual(bounds["pip"], "version 24.0 or newer")
+        self.assertEqual(bounds["requests"], "version 2.31.0 or newer")
+        self.assertTrue(bounds["Example Launcher"].startswith("a version newer than 2.1.0.0; for 2 more CVEs Wazuh "
+                                                              "gives a build date"))
         for program in posture.programs:
-            self.assertTrue(all(P.fixes(program.bound, cve.condition) for cve in program.cves), program.name)
+            self.assertTrue(all(P.fixes(program.bound, cve.condition) for cve in program.cves
+                                if P.comparable(cve.condition, program.version)), program.name)
         self.assertFalse(P.fixes(P.Bound("3.14.4"), "Package less than or equal to 3.14.4"))
-        self.assertEqual(posture.solved, 1)  # the archiver's CVE was solved after it was raised
+        self.assertEqual(posture.solved, 1)  # the archiver's CVE was solved; it is not in the inventory either
+        self.assertNotIn("Example Archiver", bounds)
+
+    def test_equal_to_means_only_that_version_is_affected(self):
+        self.assertEqual(P.read_condition("Package equal to 7.2.6"), ("7.2.6", True))
+        self.assertEqual(P.fixing_bound([("a", "Package equal to 7.2.6")]).text(), "a version newer than 7.2.6")
+
+    def test_a_build_date_is_not_compared_with_a_version_number(self):
+        # Steam lists 2.10.91.91 in Windows for years while it updates itself; NVD's bounds are dates
+        bound = P.fixing_bound([("a", "Package less than or equal to 2019-08-16"), ("b", "Package less than 2015-05-13")],
+                               "2.10.91.91")
+        self.assertEqual((bound.version, bound.dated), (None, ("a", "b")))
+        self.assertIn("latest version", bound.text())
+        self.assertFalse(P.comparable("Package less than 2019-09-12", "2.10.91.91"))
+        self.assertTrue(P.comparable("Package less than 2019-09-12", "2019-08-01"))
 
 
 class RegistryTests(unittest.TestCase):
@@ -190,6 +209,18 @@ class AdviceTests(unittest.TestCase):
         bitlocker = self.by_id["check 90005"]
         self.assertIn("Windows 11 Home has no BitLocker management", bitlocker.notes[0])
         self.assertLess(bitlocker.score, 10)
+
+    def test_the_inventory_is_the_current_state_and_the_alerts_add_the_vector(self):
+        browser = self.by_id["program: Example Browser 118.0.2"]
+        self.assertIn((15, "a CVE can be reached over the network without signing in"), browser.reasons)
+        launcher = self.by_id["program: Example Launcher 2.1.0.0"]
+        self.assertTrue(any("CVSS vector" in why for _, why in launcher.reasons))  # unknown, said so, no points
+        self.assertTrue(any("under evaluation" in note for note in launcher.notes))
+        self.assertTrue(any("false alarms" in note for note in launcher.notes))
+        program = next(p for p in self.posture.programs if p.name == "Example Launcher")
+        self.assertIsNone(next(c for c in program.cves if c.id == "CVE-2099-4003").score)  # -1: not scored yet
+        requests = self.by_id["program: requests 2.25.0"]
+        self.assertIn('python -m pip install --upgrade "requests>=2.31.0"', [s.text for s in requests.steps])
 
     def test_the_ranking(self):
         order = [a.item for a in self.advice]

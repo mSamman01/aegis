@@ -51,6 +51,8 @@ class Cve:
     network: bool = False  # attack vector NETWORK
     no_privileges: bool = False  # privileges required NONE
     no_interaction: bool = False  # user interaction NONE
+    vector_known: bool = False  # the CVSS vector was in Wazuh's data (the alerts have it, the inventory not)
+    under_evaluation: bool = False  # NVD has not scored it yet
 
 
 @dataclass(frozen=True)
@@ -60,11 +62,20 @@ class Bound:
     version: str | None  # None: no condition could be read
     newer_than: bool = False  # True: this version is itself affected; a newer one is needed
     unread: tuple = ()  # CVEs whose condition could not be read
+    dated: tuple = ()  # CVEs whose bound is a build date, which does not compare with the installed version
 
     def text(self) -> str:
         if self.version is None:
+            if self.dated:
+                return ("its latest version (Wazuh gives the bounds as build dates, which cannot be compared with "
+                        "the version Windows lists)")
             return "no fixed version is known (Wazuh gave no bound Aegis can read)"
-        return f"a version newer than {self.version}" if self.newer_than else f"version {self.version} or newer"
+        text = f"a version newer than {self.version}" if self.newer_than else f"version {self.version} or newer"
+        if self.dated:
+            text += (f"; for {len(self.dated)} more CVE{'s' if len(self.dated) != 1 else ''} Wazuh gives a build "
+                     "date, which cannot be compared with the version Windows lists, so make sure it is fully up "
+                     "to date")
+        return text
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,7 @@ class Program:
     version: str
     cves: tuple
     bound: Bound
+    type: str = ""  # Wazuh's package type: win, pypi, npm ...
 
 
 @dataclass(frozen=True)
@@ -190,7 +202,8 @@ def read_export(data: dict) -> Posture:
 # Programs: CVEs and the version that fixes all of them
 # --------------------------------------------------------------------------
 
-_CONDITION = re.compile(r"^package\s+(less than or equal to|less than)\s+([0-9][0-9A-Za-z.+-]*)$", re.I)
+_CONDITION = re.compile(r"^package\s+(less than or equal to|less than|equal to)\s+([0-9][0-9A-Za-z.+-]*)$", re.I)
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RANGE = re.compile(r"^package\s+greater than(?: or equal to)?\s+\S+\s+and\s+(less than or equal to|less than)\s+"
                     r"([0-9][0-9A-Za-z.+-]*)$", re.I)
 
@@ -207,7 +220,10 @@ def version_key(version: str) -> tuple:
 
 
 def read_condition(text: str) -> tuple[str, bool] | None:
-    """Wazuh's bound as (version, version itself affected). None if it is not one Aegis can read."""
+    """Wazuh's bound as (version, version itself affected). None if it is not one Aegis can read.
+
+    "less than X": X is fixed. "less than or equal to X" and "equal to X": X is affected, a newer one is not.
+    """
     text = " ".join(str(text or "").split())
     match = _CONDITION.match(text) or _RANGE.match(text)
     if not match:
@@ -215,22 +231,31 @@ def read_condition(text: str) -> tuple[str, bool] | None:
     return match.group(2), match.group(1).lower().endswith("equal to")
 
 
-def fixing_bound(conditions: Iterable[tuple[str, str]]) -> Bound:
+def comparable(condition: str, installed: str) -> bool:
+    """False when the bound is a build date and the installed version is not (or the other way round)."""
+    read = read_condition(condition)
+    return read is not None and bool(_DATE.match(read[0])) == bool(_DATE.match(installed.strip()))
+
+
+def fixing_bound(conditions: Iterable[tuple[str, str]], installed: str = "") -> Bound:
     """The lowest version that is outside every condition. ``conditions``: (cve, condition text)."""
     best: tuple | None = None  # (version key, newer_than, version)
-    unread = []
+    unread, dated = [], []
     for cve, text in conditions:
         read = read_condition(text)
         if read is None:
             unread.append(cve)
+            continue
+        if installed and not comparable(text, installed):
+            dated.append(cve)
             continue
         version, inclusive = read
         candidate = (version_key(version), inclusive, version)
         if best is None or candidate[:2] > best[:2]:
             best = candidate
     if best is None:
-        return Bound(None, unread=tuple(unread))
-    return Bound(best[2], best[1], tuple(unread))
+        return Bound(None, unread=tuple(unread), dated=tuple(dated))
+    return Bound(best[2], best[1], tuple(unread), tuple(dated))
 
 
 def fixes(bound: Bound, condition: str) -> bool:
@@ -246,11 +271,12 @@ def fixes(bound: Bound, condition: str) -> bool:
 
 
 def read_programs(alerts: Sequence, inventory: Sequence) -> tuple[list, int, list]:
-    """Programs with active CVEs, from the vulnerability alerts (newest record per CVE and version)."""
+    """Programs with active CVEs.
+
+    The inventory, when Wazuh has one, is the current state; the alerts then only add the CVSS vector
+    the inventory lacks. Without an inventory the alerts are all there is (newest record per CVE).
+    """
     problems = []
-    if inventory:
-        problems.append(f"{len(inventory)} inventory records are in the export; this version of Aegis reads the "
-                        "vulnerability alerts only")
     latest: dict[tuple, dict] = {}
     for record in alerts:
         vulnerability = record.get("vulnerability") if isinstance(record, dict) else None
@@ -263,35 +289,62 @@ def read_programs(alerts: Sequence, inventory: Sequence) -> tuple[list, int, lis
             continue
         if key not in latest or str(record.get("timestamp")) >= str(latest[key].get("timestamp")):
             latest[key] = record
-    by_program: dict[tuple, list] = {}
-    solved = 0
-    for (cve, name, version), record in sorted(latest.items()):
-        vulnerability = record["vulnerability"]
-        if str(vulnerability.get("status") or "Active").lower() != "active":
-            solved += 1
-            continue
-        package = vulnerability.get("package") or {}
-        vector = ((vulnerability.get("cvss") or {}).get("cvss3") or {}).get("vector") or {}
-        score = (vulnerability.get("score") or {}).get("base") or ((vulnerability.get("cvss") or {}).get("cvss3")
-                                                                     or {}).get("base_score")
-        try:
-            score = round(float(score), 1) if score not in (None, "") else None
-        except (TypeError, ValueError):
-            score = None
-        by_program.setdefault((name, version), []).append(Cve(
-            id=cve, severity=str(vulnerability.get("severity") or ""), score=score,
-            condition=" ".join(str(package.get("condition") or "").split()),
-            network=str(vector.get("attack_vector") or "").upper() == "NETWORK",
-            no_privileges=str(vector.get("privileges_required") or "").upper() == "NONE",
-            no_interaction=str(vector.get("user_interaction") or "").upper() == "NONE",
-        ))
+    solved = sum(1 for record in latest.values()
+                 if str(record["vulnerability"].get("status") or "Active").lower() != "active")
+    found: dict[tuple, list] = {}
+    if inventory:
+        for record in inventory:
+            vulnerability = record.get("vulnerability") if isinstance(record, dict) else None
+            package = record.get("package") if isinstance(record, dict) else None
+            if not isinstance(vulnerability, dict) or not isinstance(package, dict):
+                problems.append("an inventory record without a vulnerability or a package was left out")
+                continue
+            key = (str(vulnerability.get("id") or ""), str(package.get("name") or ""), str(package.get("version") or ""))
+            if not all(key):
+                problems.append("an inventory record without a CVE, program or version was left out")
+                continue
+            alert = (latest.get(key) or {}).get("vulnerability") or {}
+            condition = ((vulnerability.get("scanner") or {}).get("condition")
+                         or (alert.get("package") or {}).get("condition") or "")
+            found.setdefault((key[1], key[2], str(package.get("type") or "")), []).append(
+                _cve(key[0], vulnerability, alert, condition))
+    else:
+        for (cve, name, version), record in sorted(latest.items()):
+            vulnerability = record["vulnerability"]
+            if str(vulnerability.get("status") or "Active").lower() != "active":
+                continue
+            found.setdefault((name, version, ""), []).append(
+                _cve(cve, vulnerability, vulnerability, (vulnerability.get("package") or {}).get("condition") or ""))
     programs = []
-    for (name, version), cves in sorted(by_program.items()):
-        bound = fixing_bound((c.id, c.condition) for c in cves)
-        programs.append(Program(name, version, tuple(sorted(cves, key=lambda c: c.id)), bound))
+    for (name, version, kind), cves in sorted(found.items()):
+        cves = sorted({c.id: c for c in cves}.values(), key=lambda c: c.id)
+        bound = fixing_bound(((c.id, c.condition) for c in cves), version)
+        programs.append(Program(name, version, tuple(cves), bound, kind))
         if bound.unread:
             problems.append(f"{name}: no bound could be read for {', '.join(bound.unread)}")
     return programs, solved, problems
+
+
+def _cve(cve: str, record: dict, alert: dict, condition: Any) -> Cve:
+    """One CVE: score and severity from ``record``, the CVSS vector from ``alert`` when there is one."""
+    vector = ((alert.get("cvss") or {}).get("cvss3") or {}).get("vector") or {}
+    score = (record.get("score") or {}).get("base")
+    if score in (None, ""):
+        score = ((record.get("cvss") or {}).get("cvss3") or {}).get("base_score")
+    try:
+        score = round(float(score), 1) if score not in (None, "") else None
+    except (TypeError, ValueError):
+        score = None
+    if score is not None and score < 0:  # -1: NVD has not scored it yet
+        score = None
+    return Cve(
+        id=cve, severity=str(record.get("severity") or ""), score=score,
+        condition=" ".join(str(condition or "").split()),
+        network=str(vector.get("attack_vector") or "").upper() == "NETWORK",
+        no_privileges=str(vector.get("privileges_required") or "").upper() == "NONE",
+        no_interaction=str(vector.get("user_interaction") or "").upper() == "NONE",
+        vector_known=bool(vector), under_evaluation=bool(record.get("under_evaluation")),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -666,12 +719,27 @@ def program_advice(program: Program) -> Advice:
         reasons.append((15, "a CVE can be reached over the network without signing in"))
         if any(c.network and c.no_privileges and c.no_interaction for c in program.cves):
             reasons.append((5, "... and without anyone clicking anything"))
+    if not any(c.vector_known for c in program.cves):
+        reasons.append((0, "whether it can be reached over the network is unknown: Wazuh's inventory gives no "
+                           "CVSS vector"))
     reasons.append((min(10, len(program.cves)), f"{len(program.cves)} CVE{'s' if len(program.cves) != 1 else ''} "
                                                 "fixed by one update"))
+    notes = []
+    waiting = sum(c.under_evaluation for c in program.cves)
+    if waiting:
+        notes.append(f"{waiting} of these CVEs {'is' if waiting == 1 else 'are'} still under evaluation at NVD "
+                     "(no score yet).")
+    if program.bound.dated:
+        notes.append("Some of Wazuh's bounds are build dates. Programs that update themselves (Steam, for one) "
+                     "can keep an old version number in Windows' list of programs, so these CVEs may be false "
+                     "alarms; check the version in the program itself.")
     steps = [Step("do", f"Update {program.name} (installed: {program.version}) to {program.bound.text()}.", "Aegis")]
-    if program.name.lower() == "pip" and program.bound.version and not program.bound.newer_than:
-        steps.append(Step("run", f'python -m pip install --upgrade "pip>={program.bound.version}"', "Aegis"))
-        steps.append(Step("check", "python -m pip --version", "Aegis"))
+    pypi = program.type == "pypi" or program.name.lower() == "pip"
+    if pypi and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", program.name):
+        wanted = (f'"{program.name}>={program.bound.version}"'
+                  if program.bound.version and not program.bound.newer_than else program.name)
+        steps.append(Step("run", f"python -m pip install --upgrade {wanted}", "Aegis"))
+        steps.append(Step("check", f"python -m pip show {program.name}", "Aegis"))
     elif program.name.lower().startswith("python "):
         steps.append(Step("do", "Install it from python.org, or with winget; then remove the old version under "
                                 "Settings > Apps if it is no longer needed.", "Aegis"))
@@ -679,11 +747,13 @@ def program_advice(program: Program) -> Advice:
         steps.append(Step("do", "Use the program's own updater or the vendor's installer; `winget upgrade` lists "
                                 "what winget can update.", "Aegis"))
     worst = sorted(program.cves, key=lambda c: (-(c.score or 0), c.id))
-    detail = f"{len(program.cves)} active CVEs, worst {worst[0].id} ({worst[0].severity}, {worst[0].score})"
+    detail = (f"{len(program.cves)} active CVE{'s' if len(program.cves) != 1 else ''}, worst {worst[0].id} "
+              f"({worst[0].severity}, {worst[0].score if worst[0].score is not None else 'no score yet'})")
     links = tuple(f"https://cti.wazuh.com/vulnerabilities/cves/{c.id}" for c in worst[:3]
                   if re.fullmatch(r"CVE-\d{4}-\d{4,}", c.id))
     return _finish(Advice(f"program: {program.name} {program.version}", "program", program.name,
-                          "Vulnerable program", 0, tuple(reasons), tuple(steps), links=links, detail=detail))
+                          "Vulnerable program", 0, tuple(reasons), tuple(steps), links=links, detail=detail,
+                          notes=tuple(notes)))
 
 
 def check_advice(check: Check) -> Advice:
@@ -916,7 +986,8 @@ def verify(posture: Posture, advice: Sequence[Advice]) -> dict:
     for program in posture.programs:
         if program.bound.version is None:
             result["bounds_unknown"] += 1
-        elif all(fixes(program.bound, cve.condition) for cve in program.cves if read_condition(cve.condition)):
+        elif all(fixes(program.bound, cve.condition) for cve in program.cves
+                 if comparable(cve.condition, program.version)):
             result["bounds_ok"] += 1
     for item in advice:
         result["with_command"] += item.kind == "check" and any(step.kind == "run" for step in item.steps)
