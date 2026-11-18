@@ -15,6 +15,7 @@ what the evidence says.
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import re
@@ -23,6 +24,9 @@ from typing import Any
 from aegis.contracts.decision import BANDS
 
 STYLESHEET = "/static/style.css"
+# Content-Security-Policy for an exported page, which no server sends headers for (frame-ancestors
+# cannot be set this way; a static page offers nothing to frame-jack anyway).
+STATIC_CSP = "default-src 'none'; style-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'"
 INLINE_RAW_LIMIT = 150  # bigger incidents link to each raw alert instead of embedding them all
 
 _INVISIBLE = re.compile(
@@ -37,9 +41,16 @@ _TAGS = frozenset(
 _VOID = frozenset({"meta", "link", "br"})
 _ATTRS = frozenset({"class", "id", "href", "title", "colspan", "min", "max", "low", "high", "optimum",
                     "value", "open", "lang", "charset", "name", "content", "rel", "http-equiv"})
-# A path on this server, or an anchor on this page. "//host" would leave the site, so a path
-# may not start with two slashes.
-_HREF = re.compile(r"^(/(?!/)[A-Za-z0-9/_.\-]*(\?[A-Za-z0-9_=&\-]*)?|#[A-Za-z][A-Za-z0-9_\-]*)$")
+# A path on this server, an anchor on this page, or (in an exported copy) a relative file a
+# folder or two up or down. "//host" would leave the site, so a path may not start with two slashes.
+_HREF = re.compile(r"^(/(?!/)[A-Za-z0-9/_.\-]*(\?[A-Za-z0-9_=&\-]*)?|#[A-Za-z][A-Za-z0-9_\-]*"
+                   r"|(\.\./){0,3}([A-Za-z0-9][A-Za-z0-9_\-]*/){0,2}[A-Za-z0-9][A-Za-z0-9._\-]*\.(html|css)"
+                   r"(#[A-Za-z][A-Za-z0-9_\-]*)?)$")
+# The only addresses outside Aegis a page may link to: fixed here, never taken from data.
+EXTERNAL = frozenset({"https://github.com/mSamman01/aegis",
+                      "https://github.com/mSamman01/aegis/blob/main/docs/eval-results.md",
+                      "https://github.com/mSamman01/aegis/blob/main/DECISIONS.md",
+                      "https://github.com/CS-Abuhelal/sentinel"})
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]*$")
 _SAFE_ARG = re.compile(r"^[A-Za-z0-9._@:\-]+$")  # can be pasted into a shell as it is
 _AGENT = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
@@ -90,7 +101,7 @@ def tag(element: str, /, *children: Any, **attrs: Any) -> Markup:
             raise ValueError(f"attribute not allowed: {key}")
         if value is None or value is False:
             continue
-        if key == "href" and not _HREF.match(str(value)):
+        if key == "href" and not (_HREF.match(str(value)) or str(value) in EXTERNAL):
             raise ValueError(f"not an internal link: {value!r}")
         if key == "id" and not _ID.match(str(value)):
             raise ValueError(f"not a plain id: {value!r}")
@@ -102,6 +113,66 @@ def tag(element: str, /, *children: Any, **attrs: Any) -> Markup:
         return Markup("".join(out))
     out += [_render(children), f"</{element}>"]
     return Markup("".join(out))
+
+
+# --------------------------------------------------------------------------
+# Where links point: paths on the server, or files in an exported folder
+# --------------------------------------------------------------------------
+
+class Links:
+    """Links for pages served by ``aegis serve``."""
+
+    static = False
+
+    def home(self) -> str:
+        return "/"
+
+    def audit(self, everything: bool = False) -> str:
+        return "/audit?all=1" if everything else "/audit"
+
+    def incident(self, incident_id: str) -> str:
+        return f"/incident/{incident_id}"
+
+    def event(self, event_id: str) -> str:
+        return f"/event/{event_id}"
+
+    def stylesheet(self) -> str:
+        return STYLESHEET
+
+
+class FileLinks(Links):
+    """Links for a folder of exported pages (``aegis export``): plain relative file names."""
+
+    static = True
+
+    def home(self) -> str:
+        return "index.html"
+
+    def audit(self, everything: bool = False) -> str:
+        return "audit.html"
+
+    def incident(self, incident_id: str) -> str:
+        return f"incident-{incident_id}.html"
+
+    def event(self, event_id: str) -> str:
+        return f"event-{event_id}.html"
+
+    def stylesheet(self) -> str:
+        return "style.css"
+
+
+_links: Links = Links()
+
+
+@contextlib.contextmanager
+def link_style(links: Links):
+    """Render pages with these links (the export uses FileLinks)."""
+    global _links
+    before, _links = _links, links
+    try:
+        yield
+    finally:
+        _links = before
 
 
 # --------------------------------------------------------------------------
@@ -118,6 +189,10 @@ def _when(iso: str | None, ms: bool = False) -> str:
 def _clock(iso: str, with_date: bool) -> str:
     full = _when(iso, ms=True)
     return full if with_date else full[11:]
+
+
+def _times(n: int) -> str:
+    return {1: "once", 2: "twice"}.get(n, f"{n} times")
 
 
 def _duration(seconds: int | None) -> str:
@@ -168,7 +243,7 @@ def _refs(refs: list[dict], limit: int = 40) -> Markup:
         if ref["label"]:
             parts.append(tag("a", ref["label"], href=f"#{ref['label']}", class_="ref"))
         elif ref["known"]:
-            parts.append(tag("a", ref["event_id"], href=f"/event/{ref['event_id']}", class_="ref ref-outside",
+            parts.append(tag("a", ref["event_id"], href=_links.event(ref["event_id"]), class_="ref ref-outside",
                              title="an event outside this incident"))
         else:
             parts.append(tag("span", f"{ref['event_id']} (not in the events file)", class_="ref ref-missing"))
@@ -210,14 +285,15 @@ def document(title: str, header: dict, body: Any, refresh: int | None = None) ->
     head = tag(
         "head",
         tag("meta", charset="utf-8"),
+        tag("meta", http_equiv="Content-Security-Policy", content=STATIC_CSP) if _links.static else None,
         tag("meta", name="viewport", content="width=device-width, initial-scale=1"),
         tag("meta", name="referrer", content="no-referrer"),
         tag("meta", http_equiv="refresh", content=str(int(refresh))) if refresh else None,
         tag("title", title),
-        tag("link", rel="stylesheet", href=STYLESHEET),
+        tag("link", rel="stylesheet", href=_links.stylesheet()),
     )
-    page = tag("html", head, tag("body", _top(header), _problems(header), tag("main", body), _footer(header)),
-               lang="en")
+    page = tag("html", head, tag("body", _top(header), _notice(header), _problems(header), tag("main", body),
+                                  _footer(header)), lang="en")
     return ("<!DOCTYPE html>\n" + page + "\n").encode("utf-8", "replace")
 
 
@@ -229,13 +305,13 @@ def _top(header: dict) -> Markup:
         audit_text = f"BROKEN after entry {audit['entries']}"
     return tag(
         "header",
-        tag("div", tag("a", "Aegis", href="/", class_="brand"), " ",
+        tag("div", tag("a", "Aegis", href=header.get("site_home") or _links.home(), class_="brand"), " ",
             tag("span", "read-only", class_="badge badge-ro"), class_="brand-line"),
-        tag("nav", tag("a", "Incidents", href="/"), " ", tag("a", "Audit log", href="/audit")),
+        tag("nav", tag("a", "Incidents", href=_links.home()), " ", tag("a", "Audit log", href=_links.audit())),
         tag("div",
             "run folder ", tag("code", header["run_dir"]),
             " · policy ", tag("code", header["policy"]["id"] or "not read"),
-            " · audit log ", tag("a", audit_text, href="/audit", class_="ok" if audit["ok"] else "bad"),
+            " · audit log ", tag("a", audit_text, href=_links.audit(), class_="ok" if audit["ok"] else "bad"),
             _feed_fact(header.get("feed")),
             class_="facts"),
         class_="top",
@@ -259,6 +335,15 @@ def _feed_fact(feed: dict | None) -> Markup:
     return frag(" · live feed ", tag("span", text, class_=cls))
 
 
+def _notice(header: dict) -> Markup:
+    """A banner for exported copies, saying what the reader is looking at."""
+    if not header.get("notice"):
+        return frag()
+    home = header.get("site_home")
+    return tag("section", tag("p", header["notice"], " ",
+                              tag("a", "About this demo", href=home) if home else None), class_="notice")
+
+
 def _problems(header: dict) -> Markup:
     if not header["problems"]:
         return frag()
@@ -267,11 +352,17 @@ def _problems(header: dict) -> Markup:
 
 
 def _footer(header: dict) -> Markup:
+    if _links.static:
+        said = ("A static copy of Aegis's read-only dashboard, made with python -m aegis export. Nothing on these "
+                "pages can approve or run an action; that is done on the command line, with python -m aegis "
+                "approve and act.")
+    else:
+        said = ("Read-only: nothing on these pages can approve or run an action. That is done on the command "
+                "line, with python -m aegis approve and act. Decisions are worked out again from the events and "
+                "the current policy whenever the data changes.")
     return tag(
         "footer",
-        tag("p", "Read-only: nothing on these pages can approve or run an action. That is done on the command "
-                 "line, with python -m aegis approve and act. Decisions are worked out again from the events and "
-                 "the current policy whenever the data changes."),
+        tag("p", said),
         tag("p", f"data version {header['version']}", class_="muted"),
     )
 
@@ -298,7 +389,7 @@ def overview_page(data: dict, refresh: int | None = None) -> bytes:
         tag("p", "Most dangerous first. Risk is worked out by fixed rules from each incident's evidence and the "
                  "current policy; the AI's verdict is shown beside it and is not part of it.", class_="lead"),
         tiles,
-        _filters(data, refresh),
+        _filters(data, refresh) if not _links.static else None,
         _incident_table(data["incidents"], counts),
     ]
     return document("Aegis - incidents", data["header"], body, refresh)
@@ -363,7 +454,7 @@ def _incident_table(rows: list[dict], counts: dict) -> Markup:
             tag("td", row["event_count"], class_="num"),
             tag("td", _when(row["first_seen"]), class_="nowrap"),
             tag("td", _duration(row["duration_seconds"]), class_="nowrap"),
-            tag("td", tag("a", row["title"], href=f"/incident/{row['incident_id']}"), tag("br"),
+            tag("td", tag("a", row["title"], href=_links.incident(row["incident_id"])), tag("br"),
                 tag("small", row["incident_id"], class_="muted mono")),
             tag("td", actions),
             tag("td", _ai_label(row["ai"]["label"])),
@@ -381,11 +472,11 @@ def _incident_table(rows: list[dict], counts: dict) -> Markup:
 def incident_page(data: dict) -> bytes:
     inc = data["incident"]
     short = inc["incident_id"][4:12]
-    run_dir = data["header"]["run_dir"]
+    run_dir = "runs" if _links.static else data["header"]["run_dir"]  # a reader of a copy has their own folder
     events = data["events"]
     multi_day = bool(events) and _when(events[0]["timestamp"])[:10] != _when(events[-1]["timestamp"])[:10]
     body = [
-        tag("p", tag("a", "← all incidents", href="/"), class_="back"),
+        tag("p", tag("a", "← all incidents", href=_links.home()), class_="back"),
         tag("h1", inc["title"]),
         tag("p", tag("code", inc["incident_id"]), class_="muted"),
         tag("p", data["problem"], class_="problem-line") if data["problem"] else None,
@@ -642,7 +733,7 @@ def _stage_act(data: dict, short: str, run_dir: str) -> Markup:
         tag("p", f"This incident grew from {act['earlier_versions']} earlier versions as events arrived; their "
                  "entries are included and marked.", class_="muted") if act["earlier_versions"] else None,
         trail,
-        tag("p", f"decide was run {act['decisions_recorded']} times for this incident on the command line "
+        tag("p", f"decide was run {_times(act['decisions_recorded'])} for this incident on the command line "
                  f"(last at {_when(act['last_decided'])} UTC).", class_="muted") if act["decisions_recorded"] else None,
     )
 
@@ -696,7 +787,7 @@ def _event_fields(e: dict) -> Markup:
     if target and net.get("dst_port"):
         target += f":{net['dst_port']}"
     return _dl([
-        ("Event id", tag("a", e["event_id"], href=f"/event/{e['event_id']}", class_="mono")),
+        ("Event id", tag("a", e["event_id"], href=_links.event(e["event_id"]), class_="mono")),
         ("Happened (UTC)", _when(e["timestamp"], ms=True)),
         ("Reached Wazuh", seen),
         ("Rule", f"{rule['id']}, level {rule['level']}: {rule['description']}"),
@@ -746,7 +837,7 @@ def _event_details(e: dict, multi_day: bool, inline_raw: bool) -> Markup:
                 class_="why"),
             frag(tag("h4", "Log line"), tag("pre", e["message"], class_="untrusted")) if e.get("message") else None,
             frag(tag("h4", "Raw alert"), tag("pre", raw, class_="untrusted raw")) if inline_raw else
-            tag("p", tag("a", "Raw alert", href=f"/event/{e['event_id']}"), class_="muted"),
+            tag("p", tag("a", "Raw alert", href=_links.event(e["event_id"])), class_="muted"),
             class_="event-body"),
         id=e["label"] or None, class_="event",
     )
@@ -758,9 +849,9 @@ def event_page(data: dict) -> bytes:
     e.setdefault("links", [])
     raw = json.dumps(e.get("raw") or {}, indent=2, ensure_ascii=False)
     body = [
-        tag("p", tag("a", "← all incidents", href="/"), class_="back"),
+        tag("p", tag("a", "← all incidents", href=_links.home()), class_="back"),
         tag("h1", "Event ", tag("code", e["event_id"])),
-        tag("p", "In incident ", [frag(tag("a", i, href=f"/incident/{i}"), " ") for i in data["incidents"]])
+        tag("p", "In incident ", [frag(tag("a", i, href=_links.incident(i)), " ") for i in data["incidents"]])
         if data["incidents"] else tag("p", "Not part of any incident (posture findings are set aside).",
                                       class_="muted"),
         tag("section",
@@ -789,7 +880,7 @@ def audit_page(data: dict, showing_all: bool) -> bytes:
                     f": {audit['problem']}. The {audit['entries']} entries before that are intact; the entries "
                     "after it are marked as not verified.")
     rows = [tag("tr", tag("td", e["seq"], class_="num"), tag("td", _when(e["time"])), tag("td", e["kind"]),
-                tag("td", tag("a", e["incident_id"][:13], href=f"/incident/{e['incident_id']}", class_="mono")
+                tag("td", tag("a", e["incident_id"][:13], href=_links.incident(e["incident_id"]), class_="mono")
                     if e.get("incident_known") and re.fullmatch(r"inc-[0-9a-f]{16}", str(e["incident_id"]))
                     else tag("span", str(e["incident_id"])[:13], class_="mono muted",
                              title="not in the current incidents file")),
@@ -806,8 +897,9 @@ def audit_page(data: dict, showing_all: bool) -> bytes:
                  "chain, but not one ending in this hash. Viewing this page writes nothing to the log.",
             class_="muted"),
         tag("p", f"Newest first. Showing {len(data['entries'])} of {data['total']}. ",
-            tag("a", "show all", href="/audit?all=1") if more else
-            (tag("a", "show the last 100", href="/audit") if showing_all and data["total"] > 100 else None)),
+            None if _links.static else
+            tag("a", "show all", href=_links.audit(True)) if more else
+            (tag("a", "show the last 100", href=_links.audit()) if showing_all and data["total"] > 100 else None)),
         tag("table", tag("thead", tag("tr", [tag("th", h) for h in (
             "Entry", "Time (UTC)", "Kind", "Incident", "Detail", "Verified")])), tag("tbody", rows),
             class_="compact") if rows else tag("p", "No entries yet.", class_="empty"),
@@ -816,6 +908,70 @@ def audit_page(data: dict, showing_all: bool) -> bytes:
 
 
 def message_page(title: str, message: str, header: dict, link: tuple[str, str] | None = None) -> bytes:
-    body = [tag("p", tag("a", "← all incidents", href="/"), class_="back"), tag("h1", title), tag("p", message),
+    body = [tag("p", tag("a", "← all incidents", href=_links.home()), class_="back"), tag("h1", title),
+            tag("p", message),
             tag("p", tag("a", link[1], href=link[0])) if link else None]
     return document(f"Aegis - {title}", header, body)
+
+
+# --------------------------------------------------------------------------
+# Plain pages: the demo's front page and a Markdown report
+# --------------------------------------------------------------------------
+
+def simple_document(title: str, body: Any, notice: str | None = None, home: str | None = None) -> bytes:
+    """A page outside any run folder: no run facts in the header, no links into a run."""
+    head = tag(
+        "head",
+        tag("meta", charset="utf-8"),
+        tag("meta", http_equiv="Content-Security-Policy", content=STATIC_CSP) if _links.static else None,
+        tag("meta", name="viewport", content="width=device-width, initial-scale=1"),
+        tag("meta", name="referrer", content="no-referrer"),
+        tag("title", title),
+        tag("link", rel="stylesheet", href=_links.stylesheet()),
+    )
+    top = tag("header", tag("div", tag("a", "Aegis", href=home or _links.home(), class_="brand"), " ",
+                            tag("span", "read-only", class_="badge badge-ro"), class_="brand-line"), class_="top")
+    notice_box = tag("section", tag("p", notice), class_="notice") if notice else None
+    page = tag("html", head, tag("body", top, notice_box, tag("main", body)), lang="en")
+    return ("<!DOCTYPE html>\n" + page + "\n").encode("utf-8", "replace")
+
+
+def markdown(text: str) -> Markup:
+    """A small subset of Markdown - headings, paragraphs, bullets, tables, `code` - with every word escaped."""
+    lines = text.splitlines()
+    blocks, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+        elif line.startswith("#"):
+            level = min(4, len(line) - len(line.lstrip("#")))
+            blocks.append(tag(f"h{level}", _inline(line.lstrip("#").strip())))
+            i += 1
+        elif line.startswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].startswith("|"):
+                rows.append([cell.strip() for cell in lines[i].strip().strip("|").split("|")])
+                i += 1
+            body = [r for r in rows[1:] if not all(re.fullmatch(r":?-{3,}:?", c) for c in r)]
+            blocks.append(tag("table", tag("thead", tag("tr", [tag("th", _inline(c)) for c in rows[0]])),
+                              tag("tbody", [tag("tr", [tag("td", _inline(c)) for c in r]) for r in body]),
+                              class_="compact report"))
+        elif line.startswith("* "):
+            items = []
+            while i < len(lines) and lines[i].startswith("* "):
+                items.append(lines[i][2:])
+                i += 1
+            blocks.append(tag("ul", [tag("li", _inline(item)) for item in items]))
+        else:
+            words = []
+            while i < len(lines) and lines[i].strip() and not lines[i].startswith(("#", "|", "* ")):
+                words.append(lines[i].strip())
+                i += 1
+            blocks.append(tag("p", _inline(" ".join(words))))
+    return frag(blocks)
+
+
+def _inline(text: str) -> Markup:
+    return frag([tag("code", part[1:-1]) if len(part) > 1 and part[0] == part[-1] == "`" else part
+                 for part in re.split(r"(`[^`]+`)", text)])

@@ -25,6 +25,20 @@ reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
 | 6 | Read-only dashboard and API; live feed from Wazuh | done |
 | 7 | Evaluation on labelled cases, benign twins, safety probe | done |
 
+## Demo and results
+
+* **[The demo](https://msamman01.github.io/aegis/)**: the dashboard and the
+  evaluation, built from the synthetic sample only. The model's answers are
+  recordings replayed at build time, and the approved lock goes to a stand-in
+  for the lab VM. `python -m aegis demo --out site` builds the same site
+  locally, with no model, no VM and no network.
+* **[Results](docs/eval-results.md)**: what Aegis did on the real lab and on
+  the evaluation cases, in counts (the real alerts stay on the laptop).
+* Every push runs the tests on Windows and Linux; pushes to `main` also
+  rebuild and publish the demo (`.github/workflows/ci.yml`).
+
+![An incident in the demo, stage by stage](docs/screenshots/incident.png)
+
 ## Try it
 
 Needs Python 3.10 or newer, and Ollama with a model for the `investigate` step
@@ -42,6 +56,8 @@ python -m aegis decide <incident id>
 python -m aegis serve --dir runs\lab
 python -m aegis watch
 python -m aegis evaluate
+python -m aegis export --dir runs\lab --out runs\copy-lab
+python -m aegis demo --out site
 python -m unittest
 ```
 
@@ -105,6 +121,15 @@ python -m unittest
   case can be opened with `serve --dir runs\eval\<case>`. `--investigate`
   also asks the model about cases it has not seen (needs Ollama). It exits
   with 1 if anything unsafe or unexpected turns up.
+* `export` writes the dashboard of one run folder as plain .html files with
+  relative links, to open from disk or put on any static host. Every page
+  carries the same Content-Security-Policy as a meta tag. The copy holds every
+  alert in the folder, so keep it under `runs\` (which git ignores) and
+  publish it only if that data may be public.
+* `demo` builds the public demo: the sample and its twins, evaluated with the
+  recorded answers in `data\samples\recordings` (a prompt without one stops
+  the build rather than asking a model), the SSH attack approved by "demo"
+  and locked on a stand-in gate, then exported with a notice on every page.
 * `unittest` runs the test suite. It never needs the model.
 
 ### The lab VM
@@ -225,16 +250,19 @@ aegis/
   snapshot.py  read-only view of a run folder for the dashboard; decides afresh
   server.py    the dashboard and API: 127.0.0.1 only, GET only
   web/         the pages (escaped by default, no JavaScript) and the stylesheet
+  export.py    a static copy of the dashboard; demo.py builds the public demo
   investigate.py  asks the model once, then checks its answer
   compare.py   lines up and scores saved verdicts
   store.py     read / write events, incidents and verdicts as JSON lines
   doctor.py    environment checks
   cli.py       the command line
-data/samples/  synthetic Wazuh-shaped alerts (safe to publish)
+data/samples/  synthetic Wazuh-shaped alerts (safe to publish), and the model's
+               recorded answers about them (recordings/), replayed by the demo
 knowledge/     operator notes about this environment
 policy/        what Aegis may do, and where
 lab/           the gate for the lab VM, the feed for the manager, their setup scripts
-docs/PLAN.md   architecture and roadmap
+docs/PLAN.md   architecture and roadmap; docs/eval-results.md the results
+.github/       CI: the tests on Windows and Linux, and the demo on GitHub Pages
 tests/         unit tests
 runs/          pipeline output (ignored by git)
 ```

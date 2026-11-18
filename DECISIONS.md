@@ -743,3 +743,43 @@ the lab and sample incidents it had not been asked about.
   every recorded prompt it got, for case names, descriptions, labels and
   change notes, and fails if one appears - the mistake that cost SENTINEL a
   result. On this run: 76 prompts, none.
+
+## D43 - A public demo, built from synthetic data in CI (2026-11-18)
+SENTINEL can be looked at without running it; Aegis could not. Now:
+
+* `python -m aegis export` writes the dashboard of one run folder as plain
+  .html files with relative links (`incident-<id>.html`, `event-<id>.html`,
+  `audit.html`). The same page code renders both; links go through one
+  object, so the server keeps its paths and a copy gets files. A static host
+  sends no headers, so each page carries the Content-Security-Policy as a
+  meta tag (no scripts, no images, no forms, no base). Filters and the
+  "show all" link need a server and are left out. `check_site` opens every
+  page and fails on a link to a missing file or anchor, a page without the
+  policy, or a script. A copy shows every alert in the folder, raw alerts
+  included; the command says so.
+* `python -m aegis demo` builds the public site from what is in git only:
+  the synthetic sample, its seven twins, the policy, the notes, and the
+  model's answers about them - 39 qwen3:4b recordings (3 per incident), now
+  committed in `data/samples/recordings/<case>/`. They hold only the prompt
+  (built from the synthetic alerts and the notes) and the model's reply.
+  Replaying needs the prompt hash to match, so the build proves the code
+  still asks exactly what was recorded; a prompt without a recording stops
+  the build instead of calling a model. When the prompt or the evidence
+  changes, the recordings must be made again on the laptop (move the real
+  runs aside, `evaluate --investigate`, copy the new recordings in).
+* The demo's sample run shows a whole response: `decide`, `approve` by
+  "demo", `act` - through the real commands, with execution going to the
+  probe's stand-in gate, which records `status, lock, status` and connects
+  to nothing. Every page says so in a notice: synthetic alerts, replayed
+  answers, stand-in VM. The build fails if the evaluation of the synthetic
+  cases breaks an expectation or an invariant, finds a leak, or if the site
+  has a broken link.
+* The real lab runs are not in the demo (D8). Their numbers, as counts only,
+  are in `docs/eval-results.md`.
+* CI (`.github/workflows/ci.yml`): the tests on Windows and Linux with Python
+  3.10 and 3.12, then the demo is built; on `main` it is published to GitHub
+  Pages. No secrets, read-only checkout; only the deploy job may write to
+  Pages.
+* Any page - served, exported or in the demo - can be printed or saved as
+  PDF from the browser: a print stylesheet drops the navigation and the
+  footer and does not split a table row, an event or an action across pages.

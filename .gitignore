@@ -13,3 +13,6 @@ data/*
 !data/samples/
 
 .env
+
+# The demo site is built by 'python -m aegis demo' (and by CI); it is never committed.
+site/

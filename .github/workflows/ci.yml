@@ -1,0 +1,72 @@
+# Tests on Windows and Linux, then the public demo (synthetic data only) on GitHub Pages.
+#
+# Pages must be switched on once: Settings -> Pages -> Build and deployment ->
+# Source: GitHub Actions. The site is published only from main; pull requests
+# build it to check that it still builds.
+name: tests and demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the tests (no model, no VM, no network)
+        run: python -m unittest discover -s tests -t .
+
+  demo:
+    name: build the demo site
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build the site from the synthetic sample and the recorded answers
+        run: python -m aegis demo --out site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    name: publish the demo
+    needs: demo
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

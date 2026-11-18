@@ -204,6 +204,16 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     ev.add_argument("--repeat", type=int, default=3, help="with --investigate: answers per incident (default: 3)")
     ev.add_argument("--no-knowledge", action="store_true", help="with --investigate: no operator notes")
 
+    exp = commands.add_parser("export", help="write a static copy of the dashboard (plain files, no server)")
+    exp.add_argument("--dir", type=Path, default=RUN_DIR, help=DIR_HELP)
+    exp.add_argument("--out", type=Path, required=True, help="folder for the pages (created if missing)")
+    exp.add_argument("--label", default=None, help="what the pages call the run folder (default: its name)")
+    exp.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+
+    dem = commands.add_parser("demo", help="build the public demo site from the synthetic sample only")
+    dem.add_argument("--out", type=Path, default=Path("site"), help="folder for the site (default: site)")
+    dem.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor()
@@ -213,6 +223,10 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
         return _serve(args)
     if args.command == "watch":
         return _watch(args)
+    if args.command == "export":
+        return _export(args)
+    if args.command == "demo":
+        return _demo(args)
     run_dir: Path = args.dir
     if args.command == "decide":
         return _decide(args)
@@ -783,6 +797,44 @@ def _approve(args: argparse.Namespace) -> int:
     print(f"Saved     {approval_path(args.dir, incident.incident_id)}")
     extra = "" if args.dir == RUN_DIR else f" --dir {args.dir}"
     print(f"Carry it out:  python -m aegis act {incident.incident_id[:8]}{extra}")
+    return 0
+
+
+def _export(args: argparse.Namespace) -> int:
+    from aegis.export import check_site, export_run
+
+    if not (args.dir / INCIDENTS_NAME).exists():
+        print(f"error: no {INCIDENTS_NAME} in {args.dir}; run 'python -m aegis correlate' first", file=sys.stderr)
+        return 2
+    try:
+        written = export_run(args.dir, args.out, label=args.label or args.dir.name, policy_path=args.policy)
+    except (OSError, ContractError, ValueError) as exc:
+        print(_ascii(f"error: cannot export: {exc}"), file=sys.stderr)
+        return 2
+    problems = check_site(args.out)
+    print(_ascii(f"Exported  {written} pages from {args.dir} into {args.out}"))
+    print(_ascii(f"Open      {args.out / 'index.html'}"))
+    print("Note      the copy holds every alert in the run folder, raw alerts included. Publish it only if "
+          "that data may be public; the public demo is 'python -m aegis demo' (synthetic data only).")
+    for problem in problems[:10]:
+        print(_ascii(f"  PROBLEM  {problem}"), file=sys.stderr)
+    return 1 if problems else 0
+
+
+def _demo(args: argparse.Namespace) -> int:
+    from aegis.demo import DemoError, build_demo
+    from aegis.investigate import InvestigationError
+
+    try:
+        built = build_demo(args.out, policy_path=args.policy, say=lambda text: print(_ascii(text), flush=True))
+    except (DemoError, InvestigationError, OSError, ContractError, ValueError) as exc:
+        print(_ascii(f"error: the demo was not built: {exc}"), file=sys.stderr)
+        return 2
+    locked = built["locked"]
+    print(_ascii(f"Built     {built['pages']} pages: the sample, {built['twins']} twins and the evaluation"))
+    print(_ascii(f"Simulated lock_account svc_backup on {locked['host']} ({locked['incident']}), approved by "
+                 f"'demo', sent to a stand-in gate: {', '.join(locked['requests'])}"))
+    print(_ascii(f"Open      {built['out'] / 'index.html'}"))
     return 0
 
 

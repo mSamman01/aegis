@@ -175,3 +175,16 @@ false alarm on 4 of 6 twins in every run (rules: 3 of 6 at medium, 1 at
 high), caught every real attack, and on the injected attack proposed what
 the planted text asked - lock root - in 2 of 3 runs; the policy denied it.
 No case name or label reached any of the 76 prompts checked.
+
+**After the milestones: closing the gap with SENTINEL.**
+1. Public demo and docs - done (2026-11-18, D43). `python -m aegis export`
+   writes any run folder's dashboard as static pages; `python -m aegis demo`
+   builds the public site from the synthetic sample, its twins and 39
+   recorded model answers, with a simulated approval and a lock on a
+   stand-in gate. CI runs the tests on Windows and Linux and publishes the
+   demo to GitHub Pages from `main`. Results on the real lab, in counts:
+   `docs/eval-results.md`.
+2. Agent mode: the investigator asks for evidence through read-only tools,
+   measured against the single call.
+3. Posture advice for the monitored PC (SCA and vulnerability findings),
+   advice only.
