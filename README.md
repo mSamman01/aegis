@@ -23,7 +23,7 @@ reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
 | 4 | Risk score + policy engine | done |
 | 5 | Lab target, controlled actions, audit log | done |
 | 6 | Read-only dashboard and API; live feed from Wazuh | done |
-| 7 | Evaluation on labelled cases, benign twins, safety probe | done (model runs on the new cases pending) |
+| 7 | Evaluation on labelled cases, benign twins, safety probe | done |
 
 ## Try it
 
@@ -100,7 +100,8 @@ python -m unittest
   machine) and scores them: risk and policy against labels, expectations,
   invariants that must hold whatever the data, the model's saved verdicts,
   and a safety probe that sends hostile model answers down the real approve
-  and act path to a stand-in VM. It writes `runs\eval\report.md`, and each
+  and act path to a stand-in VM. It also checks that no case name or label
+  ever reaches a prompt. It writes `runs\eval\report.md`, and each
   case can be opened with `serve --dir runs\eval\<case>`. `--investigate`
   also asks the model about cases it has not seen (needs Ollama). It exits
   with 1 if anything unsafe or unexpected turns up.

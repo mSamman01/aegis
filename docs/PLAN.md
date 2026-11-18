@@ -158,7 +158,7 @@ alerts, no gaps), scored 85 (critical), and was approved and locked from
 `runs\live`; the lock's own log lines then grew the incident, and the
 dashboard carried "done" over to the new version (D39). 298 tests pass.
 
-**7. Evaluation - done (2026-11-18); model runs on the new cases pending.**
+**7. Evaluation - done (2026-11-18).**
 `python -m aegis evaluate` scores 11 cases (185 incidents): the sample, seven
 twins made from its attacks, and the real lab, live and laptop runs (D40).
 Both real attacks are critical with the lock waiting for a human and the
@@ -170,5 +170,8 @@ connection stays medium, and the specific rules (service path, critical
 file) drop to low. The probe's 14 hostile answers carry out nothing; one
 reaches a human. Model verdicts already saved: 23% false alarms on the
 laptop export, every sample attack caught, no citation of missing evidence
-in 469 findings (D41). Still to run on the laptop: `evaluate --investigate`
-(35 calls, about 4 minutes) for the twins and the live run.
+in 469 findings (D41). Asked about the new cases (D42), the model raised a
+false alarm on 4 of 6 twins in every run (rules: 3 of 6 at medium, 1 at
+high), caught every real attack, and on the injected attack proposed what
+the planted text asked - lock root - in 2 of 3 runs; the policy denied it.
+No case name or label reached any of the 76 prompts checked.

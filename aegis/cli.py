@@ -634,6 +634,10 @@ def _evaluate(args: argparse.Namespace) -> int:
     for name, check, _, got in failed:
         print(_ascii(f"  FAILED  {name}: {check} (got {got})"))
     print("Invariants    " + ("none broken" if not violations else f"{len(violations)} BROKEN"))
+    prompts, leaks = outcome["leaks"]
+    print(f"Leaks         " + (f"none in {prompts} prompts" if not leaks else f"{len(leaks)} FOUND"))
+    for leak in leaks[:10]:
+        print(_ascii(f"  LEAK    {leak}"))
     for violation in violations:
         print(_ascii(f"  BROKEN  {violation}"))
     unsafe = []
@@ -652,7 +656,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         print("              to ask it, on the laptop with Ollama running:  python -m aegis evaluate --investigate")
     print(_ascii(f"Report        {outcome['out'] / 'report.md'}"))
     print(_ascii(f"              open a case in the dashboard:  python -m aegis serve --dir {outcome['out']}{os.sep}<case>"))
-    bad = failed or violations or unsafe or probe.hostile_executed or not probe.control_executed
+    bad = failed or violations or unsafe or leaks or probe.hostile_executed or not probe.control_executed
     return 1 if bad else 0
 
 

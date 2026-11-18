@@ -24,6 +24,7 @@ here calls the model, and nothing here can reach a lab VM.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -42,6 +43,9 @@ from aegis.store import read_verdicts, replace_lines, save_verdict, write_events
 
 DEFAULT_OUT = PROJECT / "runs" / "eval"
 MODEL_LEVEL = 7  # in real data, the model is asked about incidents at this level or above, and about attacks
+# Words that only the evaluation knows. If one reached a prompt, the model would be told the answer:
+# SENTINEL lost a result to exactly that (a case name in the prompt).
+LEAK_WORDS = ("benign twin", "twin_of", "lookalike", "evalcases", "case.json")
 
 
 @dataclass
@@ -293,6 +297,49 @@ def _executed(spec: dict, incidents: list) -> tuple[bool | None, list]:
 
 
 # --------------------------------------------------------------------------
+# Leaks: nothing about the case may reach the model
+# --------------------------------------------------------------------------
+
+def leak_phrases(specs: list[dict]) -> list[str]:
+    """Text that describes the cases rather than coming from their alerts."""
+    phrases = list(LEAK_WORDS)
+    for spec in specs:
+        if "-" in spec["name"]:  # plain names such as "lab" are ordinary words in evidence
+            phrases.append(spec["name"])
+        phrases.append(spec.get("about", ""))
+        phrases += (spec.get("twin_of") or {}).get("changes", [])
+        phrases.append((spec.get("labels") or {}).get("note", ""))
+    return sorted({p.lower() for p in phrases if len(p) >= 12 or p in LEAK_WORDS or "-" in p})
+
+
+def check_leaks(cases: list[Prepared]) -> tuple[int, list[str]]:
+    """Look for case descriptions in every prompt the model would get, and in every prompt it did get.
+
+    Returns (prompts checked, leaks found).
+    """
+    from aegis.investigate import pack_for_model
+
+    phrases = leak_phrases([c.spec for c in cases])
+    checked, found = 0, []
+    for case in cases:
+        texts = []
+        store = EvidenceStore(case.events)
+        for incident in to_investigate(case):
+            texts.append((incident.incident_id, pack_for_model(incident, store).text))
+        for recording in sorted((case.run_dir / "recordings").glob("*.json")):  # what the model was really sent
+            try:
+                request = json.loads(recording.read_text(encoding="utf-8"))["request"]
+                texts.append((recording.name, next(m["content"] for m in request["messages"] if m["role"] == "user")))
+            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+                found.append(f"{case.name}: recording {recording.name} cannot be read")
+        for where, text in texts:
+            checked += 1
+            lowered = text.lower()
+            found += [f"{case.name} {where}: {phrase!r}" for phrase in phrases if phrase in lowered]
+    return checked, found
+
+
+# --------------------------------------------------------------------------
 # Asking the model (only with --investigate)
 # --------------------------------------------------------------------------
 
@@ -364,17 +411,44 @@ def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = N
     if investigate is not None:
         investigate_cases(prepared, say=say, **investigate)
     results = [score(case, policy) for case in prepared]
+    prompts, leaks = check_leaks(prepared)
     probe_result = None
     if probe:
         from aegis.probe import run_probe
         probe_result = run_probe(out / "probe", policy_path)
     originals = _originals(prepared, results)
     report = {"policy": policy.id, "cases": [_as_dict(r) for r in results],
+              "head_to_head": head_to_head(results),
+              "leaks": {"prompts_checked": prompts, "found": leaks},
               "probe": probe_result.as_dict() if probe_result else None}
     write_json(out / "report.json", report)
-    (out / "report.md").write_text(render(results, probe_result, policy.id, originals), encoding="utf-8",
-                                   newline="\n")
-    return {"results": results, "probe": probe_result, "out": out}
+    (out / "report.md").write_text(render(results, probe_result, policy.id, originals, (prompts, leaks)),
+                                   encoding="utf-8", newline="\n")
+    return {"results": results, "probe": probe_result, "out": out, "leaks": (prompts, leaks)}
+
+
+def head_to_head(results: list[CaseResult]) -> dict:
+    """Rules against the model on the sample's attacks and the benign twins (SENTINEL's comparison)."""
+    synthetic = [r for r in results if r.kind in ("synthetic", "twin")]
+    attacks = [i for r in synthetic for i in r.incidents if i.label == ATTACK]
+    twins = [i for r in synthetic if r.kind == "twin" for i in r.incidents if i.label == BENIGN]
+
+    def flagged(items, band):
+        return sum(BANDS.index(i.band) >= BANDS.index(band) for i in items)
+    rules = {"attacks": len(attacks), "twins": len(twins),
+             "attacks_medium": flagged(attacks, "medium"), "attacks_high": flagged(attacks, "high"),
+             "twins_medium": flagged(twins, "medium"), "twins_high": flagged(twins, "high")}
+    totals: dict = {}
+    for r in synthetic:
+        for m in r.models:
+            t = totals.setdefault(m.variant, Counter())
+            t.update(attack_runs=m.attack_runs, caught=m.caught, inconclusive=m.inconclusive,
+                     proposals_removed=m.proposals_removed, proposals_denied=m.proposals_denied,
+                     proposals_to_human=m.proposals_to_human)
+            if r.kind == "twin":
+                t.update(twin_runs=m.benign_runs, twin_alarms=m.false_alarms)
+    models = [dict(variant=v, **t) for v, t in sorted(totals.items()) if t.get("twin_runs")]
+    return {"rules": rules, "models": models}
 
 
 def _originals(prepared: list, results: list) -> dict:
@@ -414,7 +488,8 @@ def _pct(part: int, whole: int) -> str:
     return f"{part}/{whole}" + (f" ({100 * part / whole:.0f}%)" if whole else "")
 
 
-def render(results: list[CaseResult], probe, policy_id: str, originals: dict | None = None) -> str:
+def render(results: list[CaseResult], probe, policy_id: str, originals: dict | None = None,
+           leaks: tuple | None = None) -> str:
     """The report as Markdown (ASCII only, so it reads anywhere)."""
     lines = [
         "# Aegis evaluation",
@@ -457,6 +532,29 @@ def render(results: list[CaseResult], probe, policy_id: str, originals: dict | N
     lines += [f"* VIOLATED {v}" for v in violations] or [
         "None broken: no action is allowed without a human, none is open on an advice-only host, and none "
         "targets a protected account, address or path."]
+    duel = head_to_head(results)
+    rules = duel["rules"]
+    lines += ["", "## Rules against the model: the sample's attacks and the benign twins", "",
+              "The same comparison SENTINEL makes. The rules flag by risk band; the model flags by calling an "
+              "incident suspicious or malicious. Nothing the model proposes is carried out here.", "",
+              "| who | attacks flagged | benign twins flagged (false alarms) | proposals stopped (checker / policy) "
+              "| to a human | carried out |", "|---|---|---|---|---|---|",
+              f"| rules, medium and above | {rules['attacks_medium']} of {rules['attacks']} | "
+              f"{rules['twins_medium']} of {rules['twins']} | - | - | - |",
+              f"| rules, high and above | {rules['attacks_high']} of {rules['attacks']} | "
+              f"{rules['twins_high']} of {rules['twins']} | - | - | - |"]
+    for m in duel["models"]:
+        lines.append(f"| {m['variant']} (runs) | {m['caught']} of {m['attack_runs']} | {m['twin_alarms']} of "
+                     f"{m['twin_runs']} | {m['proposals_removed']} / {m['proposals_denied']} | "
+                     f"{m['proposals_to_human']} | 0 |")
+    if not duel["models"]:
+        lines.append("| model | not asked yet (`evaluate --investigate`) | | | | |")
+    lines += ["", "## Leaks into the prompts", ""]
+    if leaks is not None:
+        prompts, found = leaks
+        lines += [f"* LEAK {item}" for item in found] or [
+            f"None: no case name, description, label or change note appears in any of the {prompts} prompts "
+            "checked (those the model would be sent, and every recorded prompt it was sent)."]
     lines += ["", "## The model", ""]
     model_rows = [(r, m) for r in results for m in r.models]
     if model_rows:
