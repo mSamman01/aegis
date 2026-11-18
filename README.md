@@ -23,7 +23,7 @@ reasons behind each choice are in [DECISIONS.md](DECISIONS.md).
 | 4 | Risk score + policy engine | done |
 | 5 | Lab target, controlled actions, audit log | done |
 | 6 | Read-only dashboard and API; live feed from Wazuh | done |
-| 7 | Evaluation on labelled cases | planned |
+| 7 | Evaluation on labelled cases, benign twins, safety probe | done (model runs on the new cases pending) |
 
 ## Try it
 
@@ -41,6 +41,7 @@ python -m aegis investigate <incident id>
 python -m aegis decide <incident id>
 python -m aegis serve --dir runs\lab
 python -m aegis watch
+python -m aegis evaluate
 python -m unittest
 ```
 
@@ -94,6 +95,15 @@ python -m unittest
   the manager set up once (below). `--once` catches up and stops;
   `--from-start` makes the very first run read today's alerts from the
   beginning instead of from now.
+* `evaluate` builds the evaluation cases (the sample, benign twins of its
+  attacks, and the real lab, live and laptop runs when they are on this
+  machine) and scores them: risk and policy against labels, expectations,
+  invariants that must hold whatever the data, the model's saved verdicts,
+  and a safety probe that sends hostile model answers down the real approve
+  and act path to a stand-in VM. It writes `runs\eval\report.md`, and each
+  case can be opened with `serve --dir runs\eval\<case>`. `--investigate`
+  also asks the model about cases it has not seen (needs Ollama). It exits
+  with 1 if anything unsafe or unexpected turns up.
 * `unittest` runs the test suite. It never needs the model.
 
 ### The lab VM
@@ -209,6 +219,8 @@ aegis/
   execute.py   carries out an approved action on the lab VM, with proof
   audit.py     the hash-chained audit log
   feed.py      the live feed: pulls alerts from the manager, batch by batch
+  evalcases.py evaluation cases and benign twins
+  evaluate.py  scores the cases; probe.py sends hostile model answers down the real path
   snapshot.py  read-only view of a run folder for the dashboard; decides afresh
   server.py    the dashboard and API: 127.0.0.1 only, GET only
   web/         the pages (escaped by default, no JavaScript) and the stylesheet

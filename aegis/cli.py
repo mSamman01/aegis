@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import textwrap
 from collections import Counter
@@ -69,7 +70,8 @@ _LINK_TEXT = {
 }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
+    """``executor_factory(policy)`` replaces how ``act`` reaches the lab VM (the safety probe uses it)."""
     parser = argparse.ArgumentParser(
         prog="aegis",
         description="Aegis: evidence-driven investigation and controlled response.",
@@ -191,9 +193,22 @@ def main(argv: list[str] | None = None) -> int:
     wat.add_argument("--min-level", type=int, default=0, help="ignore alerts below this rule level (default: 0)")
     wat.add_argument("--window", type=float, default=30, help="correlation window in minutes (default: 30)")
 
+    ev = commands.add_parser("evaluate", help="score Aegis on labelled cases and run the safety probe")
+    ev.add_argument("--cases", type=Path, default=None, help="case folder (default: data/eval/cases)")
+    ev.add_argument("--no-build", action="store_true", help="use the cases as they are; do not rebuild them first")
+    ev.add_argument("--out", type=Path, default=RUN_DIR / "eval", help="where results go (default: runs/eval)")
+    ev.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+    ev.add_argument("--investigate", action="store_true",
+                    help="ask the model about chosen incidents that have no verdict yet (needs Ollama)")
+    ev.add_argument("--model", default=None, help="with --investigate: Ollama model (default: qwen3:4b)")
+    ev.add_argument("--repeat", type=int, default=3, help="with --investigate: answers per incident (default: 3)")
+    ev.add_argument("--no-knowledge", action="store_true", help="with --investigate: no operator notes")
+
     args = parser.parse_args(argv)
     if args.command == "doctor":
         return _doctor()
+    if args.command == "evaluate":
+        return _evaluate(args)
     if args.command == "serve":
         return _serve(args)
     if args.command == "watch":
@@ -204,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "approve":
         return _approve(args)
     if args.command == "act":
-        return _act(args)
+        return _act(args, executor_factory or make_executor)
     if args.command == "audit":
         return _audit(args.dir, args.last)
     if args.command == "compare":
@@ -561,6 +576,86 @@ def _decision_record(decision) -> dict:
     }
 
 
+def _evaluate(args: argparse.Namespace) -> int:
+    from aegis import evalcases
+    from aegis import evaluate as evaluating
+    from aegis.investigate import InvestigationError
+
+    if not 1 <= args.repeat <= 10:
+        print("error: --repeat must be between 1 and 10", file=sys.stderr)
+        return 2
+    cases = args.cases or evalcases.DEFAULT_CASES
+    try:
+        if not args.no_build:
+            built = evalcases.build_all(cases)
+            kinds = Counter(spec["kind"] for spec in built)
+            print(_ascii(f"Cases     {len(built)} built in {cases}  ({', '.join(f'{n} {k}' for k, n in kinds.items())})"))
+    except (OSError, ContractError, evalcases.CaseError) as exc:
+        print(_ascii(f"error: cannot build the cases: {exc}"), file=sys.stderr)
+        return 2
+    policy_path = args.policy or DEFAULT_POLICY_FILE
+    policy = _load(load_policy, policy_path, "check the --policy path")
+    if policy is None:
+        return 2
+    investigate = None
+    if args.investigate:
+        notes = None
+        if not args.no_knowledge and DEFAULT_NOTES_FILE.exists():
+            notes = _load(load_notes, DEFAULT_NOTES_FILE, "")
+            if notes is None:
+                return 2
+        investigate = {"model": args.model or default_model(), "repeat": args.repeat, "notes": notes}
+    try:
+        outcome = evaluating.run(cases, args.out, policy, policy_path, investigate=investigate,
+                                 say=lambda text: print(_ascii(text), flush=True))
+    except InvestigationError as exc:
+        print(_ascii(f"error: {exc}"), file=sys.stderr)
+        print("The answers received so far are saved; run the same command again to carry on.", file=sys.stderr)
+        return 2
+    except (OSError, ContractError, evalcases.CaseError) as exc:
+        print(_ascii(f"error: {exc}"), file=sys.stderr)
+        return 2
+    results, probe = outcome["results"], outcome["probe"]
+    print()
+    print(f"{'case':<24} {'kind':<9} {'incidents':>9}  {'attacks med+/high+':>18}  {'benign med+/high+':>17}  "
+          f"{'asked':>5}  {'model runs':>10}")
+    for r in results:
+        c = r.counts()
+        attacks = f"{c['attacks_medium']}/{c['attacks_high']} of {c['attacks']}" if c["attacks"] else "-"
+        benign = f"{c['benign_medium']}/{c['benign_high']} of {c['benign']}" if c["benign"] else "-"
+        runs = sum(m.runs for m in r.models) or "-"
+        print(_ascii(f"{r.name:<24} {r.kind:<9} {c['incidents']:>9}  {attacks:>18}  {benign:>17}  "
+                     f"{c['benign_asked'] if c['benign'] else '-':>5}  {runs:>10}"))
+    checks = [(r.name, c, ok, got) for r in results for c, ok, got in r.expectations]
+    failed = [x for x in checks if not x[2]]
+    violations = [v for r in results for v in r.violations]
+    print()
+    print(f"Expectations  {len(checks) - len(failed)}/{len(checks)} hold")
+    for name, check, _, got in failed:
+        print(_ascii(f"  FAILED  {name}: {check} (got {got})"))
+    print("Invariants    " + ("none broken" if not violations else f"{len(violations)} BROKEN"))
+    for violation in violations:
+        print(_ascii(f"  BROKEN  {violation}"))
+    unsafe = []
+    for r in results:
+        unsafe += [e for e in r.executed if not e[4]]
+    if any(r.executed for r in results):
+        done = sum(len(r.executed) for r in results)
+        print(f"Executed      {done} action(s) in the real runs, "
+              + ("each approved by a human first" if not unsafe else f"{len(unsafe)} WITHOUT AN APPROVAL FIRST"))
+    print(f"Probe         {sum(1 for row in probe.rows if row.hostile)} hostile proposals, "
+          f"{probe.hostile_executed} carried out; the sober control was "
+          f"{'carried out after approval' if probe.control_executed else 'NOT carried out'}")
+    missing = [r.name for r in results if not r.models]
+    if missing:
+        print(_ascii(f"Model         no verdicts yet for {len(missing)} cases ({', '.join(missing)})"))
+        print("              to ask it, on the laptop with Ollama running:  python -m aegis evaluate --investigate")
+    print(_ascii(f"Report        {outcome['out'] / 'report.md'}"))
+    print(_ascii(f"              open a case in the dashboard:  python -m aegis serve --dir {outcome['out']}{os.sep}<case>"))
+    bad = failed or violations or unsafe or probe.hostile_executed or not probe.control_executed
+    return 1 if bad else 0
+
+
 def _watch(args: argparse.Namespace) -> int:
     from aegis.feed import Feed, FeedError, FeedSettings  # only this command needs the feed
 
@@ -691,7 +786,7 @@ def make_executor(policy) -> GateExecutor:
     return GateExecutor(policy.executor.ssh_user, policy.executor.ssh_key)
 
 
-def _act(args: argparse.Namespace) -> int:
+def _act(args: argparse.Namespace, executor_factory=None) -> int:
     loaded = _fresh_decision(args)
     if loaded is None:
         return 2
@@ -741,7 +836,7 @@ def _act(args: argparse.Namespace) -> int:
         print("Dry run: nothing was run.")
         return 0
 
-    executor = make_executor(policy)
+    executor = (executor_factory or make_executor)(policy)
     failed = 0
     for action in to_run:
         record = {"policy_id": policy.id, "action": action.action, "target": action.target,
