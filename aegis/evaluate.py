@@ -17,12 +17,14 @@
   6. for real runs, checks that every action the audit log says was carried
      out had a human's approval before it
 
-then runs the safety probe (aegis.probe). Without ``--investigate`` nothing
+then puts agent mode beside the single call on the incidents both answered
+(D44), and runs the safety probe (aegis.probe). Without ``--investigate`` nothing
 here calls the model, and nothing here can reach a lab VM.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections import Counter
 from dataclasses import dataclass, field
@@ -317,7 +319,8 @@ def check_leaks(cases: list[Prepared]) -> tuple[int, list[str]]:
 
     Returns (prompts checked, leaks found).
     """
-    from aegis.investigate import pack_for_model
+    from aegis.agent import MAX_TOOL_CALLS, Desk
+    from aegis.investigate import parts_for_model
 
     phrases = leak_phrases([c.spec for c in cases])
     checked, found = 0, []
@@ -325,12 +328,18 @@ def check_leaks(cases: list[Prepared]) -> tuple[int, list[str]]:
         texts = []
         store = EvidenceStore(case.events)
         for incident in to_investigate(case):
-            texts.append((incident.incident_id, pack_for_model(incident, store).text))
+            parts = parts_for_model(incident, store)
+            # agent mode is sent the outline, then pieces of this same pack
+            texts.append((incident.incident_id, parts.pack().text))
+            texts.append((incident.incident_id + " outline", Desk(parts).outline(MAX_TOOL_CALLS)))
         for recording in sorted((case.run_dir / "recordings").glob("*.json")):  # what the model was really sent
             try:
                 request = json.loads(recording.read_text(encoding="utf-8"))["request"]
-                texts.append((recording.name, next(m["content"] for m in request["messages"] if m["role"] == "user")))
-            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+                sent = [m["content"] for m in request["messages"] if m["role"] != "system"]
+                if not sent or not all(isinstance(text, str) for text in sent):
+                    raise ValueError("no messages")
+                texts.append((recording.name, "\n".join(sent)))
+            except (OSError, ValueError, KeyError, TypeError):
                 found.append(f"{case.name}: recording {recording.name} cannot be read")
         for where, text in texts:
             checked += 1
@@ -357,29 +366,39 @@ def to_investigate(case: Prepared) -> list:
 
 
 def investigate_cases(cases: list[Prepared], *, model: str, repeat: int, notes, say: Callable[[str], None],
-                      client=None) -> int:
+                      client=None, mode: str = "single_call") -> int:
     """Ask the model about every chosen incident that has no verdict for this setup yet.
 
-    A recording made for exactly the same prompt is replayed instead of asking
-    again, so running this twice costs nothing the second time.
+    ``mode`` is "single_call" or agent mode (aegis.agent.MODE); both are asked
+    about the same incidents. A recording made for exactly the same prompt is
+    replayed instead of asking again, so running this twice costs nothing the
+    second time.
     """
+    from aegis import agent
     from aegis.investigate import PROMPT_VERSION, InvestigationError, investigate
     from aegis.knowledge import notes_fingerprint
 
+    if mode not in ("single_call", agent.MODE):
+        raise ValueError(f"unknown mode {mode!r}")
+    ask = agent.investigate_agent if mode == agent.MODE else investigate
     knowledge_id = notes_fingerprint(notes) if notes is not None else ""
     todo = []
     for case in cases:
         have = {(v.incident_id, v.run.attempt) for v in case.verdicts
                 if v.run.model == model and v.run.prompt_version == PROMPT_VERSION and not v.run.thinking
+                and v.run.mode == mode
                 and v.run.knowledge == (notes is not None) and v.run.knowledge_id == knowledge_id}
         for incident in to_investigate(case):
             for attempt in range(1, repeat + 1):
                 if (incident.incident_id, attempt) not in have:
                     todo.append((case, incident, attempt))
+    what = "in agent mode " if mode != "single_call" else ""
     if not todo:
-        say("The model has already answered every chosen incident with this setup.")
+        say(f"The model has already answered every chosen incident {what}with this setup.")
         return 0
-    say(f"Asking {model} {len(todo)} times (about 7 s each with qwen3:4b on the laptop's GPU).")
+    each = ("up to a minute each with qwen3:4b on the laptop's GPU: one request per tool it uses"
+            if mode != "single_call" else "about 7 s each with qwen3:4b on the laptop's GPU")
+    say(f"Asking {model} {what}{len(todo)} times ({each}).")
     asked = 0
     stores: dict = {}
     for number, (case, incident, attempt) in enumerate(todo, 1):
@@ -388,14 +407,15 @@ def investigate_cases(cases: list[Prepared], *, model: str, repeat: int, notes, 
         if client is not None:
             options["client"] = client
         try:
-            outcome = investigate(incident, store, replay=True, **options)
+            outcome = ask(incident, store, replay=True, **options)
         except InvestigationError:
-            outcome = investigate(incident, store, replay=False, **options)
+            outcome = ask(incident, store, replay=False, **options)
             asked += 1
         save_verdict(case.run_dir / "verdicts.jsonl", outcome.verdict)
         case.verdicts.append(outcome.verdict)
+        tools = f", {len(outcome.verdict.run.steps)} tools" if mode != "single_call" else ""
         say(f"  [{number}/{len(todo)}] {case.name:<22} {incident.incident_id}  attempt {attempt}: "
-            f"{outcome.verdict.label.value}")
+            f"{outcome.verdict.label.value}{tools}")
     return asked
 
 
@@ -404,13 +424,15 @@ def investigate_cases(cases: list[Prepared], *, model: str, repeat: int, notes, 
 # --------------------------------------------------------------------------
 
 def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = None, *,
-        say: Callable[[str], None] = print, investigate: dict | None = None, probe: bool = True) -> dict:
+        say: Callable[[str], None] = print, investigate: dict | list | None = None, probe: bool = True) -> dict:
+    """``investigate`` is one setup for investigate_cases, or a list of them (asked in that order)."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     prepared = [prepare(folder, spec, out) for folder, spec in load_cases(cases_dir)]
-    if investigate is not None:
-        investigate_cases(prepared, say=say, **investigate)
+    for setup in [investigate] if isinstance(investigate, dict) else (investigate or []):
+        investigate_cases(prepared, say=say, **setup)
     results = [score(case, policy) for case in prepared]
+    modes = compare_modes(prepared, policy)
     prompts, leaks = check_leaks(prepared)
     probe_result = None
     if probe:
@@ -419,12 +441,122 @@ def run(cases_dir: Path, out: Path, policy: Policy, policy_path: Path | None = N
     originals = _originals(prepared, results)
     report = {"policy": policy.id, "cases": [_as_dict(r) for r in results],
               "head_to_head": head_to_head(results),
+              "modes": [row.as_dict() for row in modes],
               "leaks": {"prompts_checked": prompts, "found": leaks},
               "probe": probe_result.as_dict() if probe_result else None}
     write_json(out / "report.json", report)
-    (out / "report.md").write_text(render(results, probe_result, policy.id, originals, (prompts, leaks)),
+    (out / "report.md").write_text(render(results, probe_result, policy.id, originals, (prompts, leaks), modes),
                                    encoding="utf-8", newline="\n")
-    return {"results": results, "probe": probe_result, "out": out, "leaks": (prompts, leaks)}
+    return {"results": results, "probe": probe_result, "out": out, "leaks": (prompts, leaks), "modes": modes}
+
+
+# --------------------------------------------------------------------------
+# Agent mode against the single call, on the same incidents (D44)
+# --------------------------------------------------------------------------
+
+@dataclass
+class ModeRow:
+    """One model setup on one kind of data, counted only on incidents both modes answered."""
+
+    data: str  # "real" or "synthetic" (the sample and its twins)
+    variant: str
+    mode: str
+    incidents: int = 0
+    runs: int = 0
+    attack_runs: int = 0
+    caught: int = 0
+    benign_runs: int = 0
+    false_alarms: int = 0
+    twin_runs: int = 0
+    twin_alarms: int = 0
+    inconclusive: int = 0
+    unstable: int = 0
+    findings_kept: int = 0
+    findings_removed: int = 0
+    citations_trimmed: int = 0
+    proposals_removed: int = 0
+    proposals_denied: int = 0
+    proposals_to_human: int = 0
+    seconds: float = 0.0
+    timed_runs: int = 0
+    tools: int = 0  # tool calls, agent mode only
+    opened_all: int = 0  # runs that opened every event of the incident
+    opened_none: int = 0  # runs that opened none of them
+    stopped: int = 0  # runs cut short by the tool limit or the context window
+
+    def as_dict(self) -> dict:
+        return dict(self.__dict__)
+
+
+def _base_variant(verdict: Verdict) -> str:
+    return variant_name(dataclasses.replace(verdict.run, mode="single_call", steps=()))
+
+
+def compare_modes(cases: list[Prepared], policy: Policy) -> list[ModeRow]:
+    """For each agent setup, it and the single call with the same model, instructions and notes.
+
+    Only incidents that both answered count, so the two rows of a pair are
+    always about the same evidence.
+    """
+    from aegis import agent
+    from aegis.investigate import parts_for_model
+
+    rows: dict[tuple, ModeRow] = {}
+    for case in cases:
+        data = "real" if case.spec.get("kind") == "real" else "synthetic"
+        current = {i.incident_id: i for i in case.incidents}
+        by_variant: dict[str, list] = {}
+        for verdict in case.verdicts:
+            if verdict.incident_id in current:
+                by_variant.setdefault(variant_name(verdict.run), []).append(verdict)
+        store = None
+        for name, answers in sorted(by_variant.items()):
+            if answers[0].run.mode == "single_call":
+                continue
+            base = _base_variant(answers[0])
+            both = {v.incident_id for v in answers} & {v.incident_id for v in by_variant.get(base, [])}
+            if not both:
+                continue
+            store = store or EvidenceStore(case.events)
+            for variant, verdicts in ((base, by_variant[base]), (name, answers)):
+                mine = [v for v in verdicts if v.incident_id in both]
+                row = rows.setdefault((data, name, variant), ModeRow(data, variant, mine[0].run.mode))
+                row.incidents += len(both)
+                counted = _model_results(dataclasses.replace(case, verdicts=mine), policy, {})
+                for m in counted:
+                    row.runs += m.runs
+                    row.attack_runs += m.attack_runs
+                    row.caught += m.caught
+                    if case.spec.get("kind") == "twin":
+                        row.twin_runs += m.benign_runs
+                        row.twin_alarms += m.false_alarms
+                    else:
+                        row.benign_runs += m.benign_runs
+                        row.false_alarms += m.false_alarms
+                    row.inconclusive += m.inconclusive
+                    row.unstable += m.unstable
+                    row.findings_kept += m.findings_kept
+                    row.findings_removed += m.findings_removed
+                    row.citations_trimmed += m.citations_trimmed
+                    row.proposals_removed += m.proposals_removed
+                    row.proposals_denied += m.proposals_denied
+                    row.proposals_to_human += m.proposals_to_human
+                for v in mine:
+                    if v.run.duration_ms is not None:
+                        row.seconds += v.run.duration_ms / 1000
+                        row.timed_runs += 1
+                    if v.run.mode == "single_call":
+                        continue
+                    incident = current[v.incident_id]
+                    row.tools += len(v.run.steps)
+                    opened = agent.opened_events(v.run.steps, parts_for_model(incident, store))
+                    row.opened_all += len(opened) == len(incident.event_ids)
+                    row.opened_none += not opened
+                    row.stopped += len(v.run.steps) >= agent.MAX_TOOL_CALLS or any(
+                        s.endswith("(no room)") for s in v.run.steps)
+    order = {"real": 0, "synthetic": 1}
+    return sorted(rows.values(), key=lambda r: (order[r.data], r.variant.replace(f" {r.mode}", ""),
+                                                r.mode != "single_call"))
 
 
 def head_to_head(results: list[CaseResult]) -> dict:
@@ -489,7 +621,7 @@ def _pct(part: int, whole: int) -> str:
 
 
 def render(results: list[CaseResult], probe, policy_id: str, originals: dict | None = None,
-           leaks: tuple | None = None) -> str:
+           leaks: tuple | None = None, modes: list | None = None) -> str:
     """The report as Markdown (ASCII only, so it reads anywhere)."""
     lines = [
         "# Aegis evaluation",
@@ -549,6 +681,34 @@ def render(results: list[CaseResult], probe, policy_id: str, originals: dict | N
                      f"{m['proposals_to_human']} | 0 |")
     if not duel["models"]:
         lines.append("| model | not asked yet (`evaluate --investigate`) | | | | |")
+    lines += ["", "## Agent mode against the single call", "",
+              "In agent mode the model starts from the incident's outline and opens the evidence itself, one "
+              "read-only tool at a time (aegis/agent.py). Every tool returns a section of the same pack the single "
+              "call is given, and only what was opened can be cited. Both modes go through the same checker and "
+              "policy. Counted only on incidents both setups answered, so each pair of rows is about the same "
+              "evidence.", ""]
+    if modes:
+        lines += ["| data | setup | incidents | runs | attacks caught | false alarms on benign | twins flagged | "
+                  "inconclusive | unstable incidents | findings kept / removed | proposals: removed by checker / "
+                  "denied by policy / to a human | s per run | tools per run | opened every event / none / cut "
+                  "short |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for m in modes:
+            seconds = f"{m.seconds / m.timed_runs:.1f}" if m.timed_runs else "-"
+            if m.mode != "single_call" and m.runs:
+                tools, opened = f"{m.tools / m.runs:.1f}", f"{m.opened_all} / {m.opened_none} / {m.stopped}"
+            else:
+                tools, opened = "- (all at once)", "-"
+            lines.append(
+                f"| {m.data} | {m.variant} | {m.incidents} | {m.runs} | "
+                f"{_pct(m.caught, m.attack_runs) if m.attack_runs else '-'} | "
+                f"{_pct(m.false_alarms, m.benign_runs) if m.benign_runs else '-'} | "
+                f"{_pct(m.twin_alarms, m.twin_runs) if m.twin_runs else '-'} | {m.inconclusive} | {m.unstable} | "
+                f"{m.findings_kept} / {m.findings_removed} | "
+                f"{m.proposals_removed} / {m.proposals_denied} / {m.proposals_to_human} | "
+                f"{seconds} | {tools} | {opened} |")
+    else:
+        lines.append("Not asked in agent mode yet. On the laptop, with Ollama running: "
+                     "`python -m aegis evaluate --investigate --agent`")
     lines += ["", "## Leaks into the prompts", ""]
     if leaks is not None:
         prompts, found = leaks

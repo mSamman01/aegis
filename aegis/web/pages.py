@@ -604,6 +604,10 @@ def _stage_investigate(data: dict, short: str, run_dir: str) -> Markup:
                  "start an action. Lines marked code were checked by Aegis, not by the model.", class_="ai-note"),
         tag("p", "Verdict ", _ai_label(verdict["label"]), f"  confidence: {verdict['confidence']}",
             class_="verdict-line"),
+        tag("p", tag("strong", "Agent mode: "), "the model opened the evidence itself, in this order: ",
+            tag("code", "; ".join(verdict["steps"])) if verdict["steps"] else "nothing (it answered from the "
+            "outline alone)", ". Only what it opened could be cited.", class_="muted")
+        if verdict["mode"] != "single_call" else None,
         tag("h3", "Summary"), tag("p", verdict["summary"] or "(none)", class_="ai-text"),
         tag("h3", "Its working before it chose (not checked)"),
         _dl([("What happened", reasoning["what_happened"]), ("Started by", reasoning["started_by"]),
@@ -620,8 +624,9 @@ def _stage_investigate(data: dict, short: str, run_dir: str) -> Markup:
     )
     answers = inv["answers"]
     others = tag("details", tag("summary", f"All {len(answers)} saved answers for this incident"),
-                 tag("p", "A small model does not always answer the same way twice. Decide uses the latest.",
-                     class_="muted"),
+                 tag("p", "A small model does not always answer the same way twice. Decide uses the latest single-call "
+                          "answer; an agent-mode answer only where there is none (agent mode is still an "
+                          "experiment, D44).", class_="muted"),
                  tag("table", tag("thead", tag("tr", [tag("th", h) for h in (
                      "Model setup", "Attempt", "Label (AI)", "Confidence", "When (UTC)")])),
                      tag("tbody", [tag("tr", tag("td", a["model"]), tag("td", a["attempt"], class_="num"),

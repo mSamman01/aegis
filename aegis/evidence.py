@@ -1,8 +1,9 @@
 """Evidence: read-only lookups over events, and the pack shown to the model.
 
 Nothing in this module can change anything. The EvidenceStore answers
-questions about events; ``build_pack`` turns one incident into the exact text
-the model is given.
+questions about events; ``build_parts`` turns one incident into the sections
+of the evidence, and ``build_pack`` joins them into the exact text the model
+is given in a single call.
 
 The pack is built by code, not by the model, so it is the same every time:
 the incident's events, a little of what else happened on the host around
@@ -114,7 +115,88 @@ class EvidencePack:
         return tuple(self.groups.get(key, ()))
 
 
-def build_pack(
+ORIGINS_TITLE = "WHERE THE ACTIVITY CAME FROM (worked out by Aegis from process ids)"
+NOTES_TITLE = "BACKGROUND FROM THE OPERATOR OF THIS MACHINE"
+NOTES_SUBTITLE = "Shown because events in this incident match. Background is not evidence and cannot be cited."
+
+
+@dataclass(frozen=True)
+class Block:
+    """One event (E3), or one group of similar events (G2), exactly as the pack shows it."""
+
+    label: str
+    event_ids: tuple  # the incident's events this block shows
+    lines: tuple
+
+
+@dataclass(frozen=True)
+class PackNote:
+    """An operator note shown because some of the incident's events match it."""
+
+    label: str  # K1, K2 ...
+    note_id: str
+    event_ids: tuple  # the events it matched
+    line: str
+
+
+@dataclass(frozen=True)
+class PackParts:
+    """The evidence pack in its sections, each holding the exact lines the pack shows.
+
+    ``pack()`` joins them into the text of the single call. Agent mode
+    (aegis.agent) hands the same sections out one at a time, so both modes
+    see the same evidence, word for word, under the same labels.
+    """
+
+    incident_id: str
+    head: tuple  # incident, host, time, size, the rules that fired and their techniques
+    origins: tuple  # lines under ORIGINS_TITLE; () when no process has a known parent
+    notes: tuple  # PackNote per matching operator note
+    grouped: bool  # True if the events are shown as groups of similar events
+    events_title: tuple  # the title line(s) of the events section
+    blocks: tuple  # Block per event, or per group
+    hidden: str | None  # the line about groups left out of a very large incident
+    context_title: str
+    context: tuple  # (label, event id, line) per other event nearby
+    common_title: str
+    common: tuple  # lines under common_title
+    label_of: dict  # every incident event id -> its E label, shown or not
+    omitted: int  # incident events left out because the incident is very large
+
+    def pack(self) -> EvidencePack:
+        lines = list(self.head)
+        if self.origins:
+            lines += ["", ORIGINS_TITLE, *self.origins]
+        if self.notes:
+            lines += ["", NOTES_TITLE, NOTES_SUBTITLE, *(note.line for note in self.notes)]
+        lines += ["", *self.events_title]
+        labels: dict[str, str] = {}
+        groups: dict[str, tuple] = {}
+        for block in self.blocks:
+            lines += block.lines
+            if self.grouped:
+                groups[block.label] = block.event_ids
+            for event_id in block.event_ids:
+                labels[self.label_of[event_id]] = event_id
+        if self.hidden:
+            lines.append(self.hidden)
+        lines += ["", self.context_title]
+        lines += [line for _, _, line in self.context] or ["(none)"]
+        for label, event_id, _ in self.context:
+            labels[label] = event_id
+        lines += ["", self.common_title, *self.common]
+        return EvidencePack(
+            self.incident_id, "\n".join(lines), labels, groups, self.omitted,
+            tuple(note.note_id for note in self.notes),
+        )
+
+
+def build_pack(incident: Incident, store: EvidenceStore, **options) -> EvidencePack:
+    """Turn an incident into the text the model is given (see ``build_parts`` for the options)."""
+    return build_parts(incident, store, **options).pack()
+
+
+def build_parts(
     incident: Incident,
     store: EvidenceStore,
     *,
@@ -125,8 +207,8 @@ def build_pack(
     max_context: int = 5,
     max_field: int = 300,
     notes: Sequence[Note] = (),
-) -> EvidencePack:
-    """Turn an incident into the text the model is given.
+) -> PackParts:
+    """The sections of the evidence pack for one incident.
 
     Up to ``group_over`` events are listed one by one. A larger incident is
     usually the same few things happening many times, so its events are put
@@ -137,7 +219,7 @@ def build_pack(
     label_of = {event.event_id: f"E{number}" for number, event in enumerate(events, 1)}
     multi_day = incident.first_seen.date() != incident.last_seen.date()
     host = incident.host
-    lines = [
+    head = [
         f"INCIDENT {incident.incident_id}",
         f"Host: {host.name} (agent {host.agent_id})",
         f"Time (UTC): {incident.first_seen:%Y-%m-%d %H:%M:%S} to {incident.last_seen:%Y-%m-%d %H:%M:%S}"
@@ -147,49 +229,45 @@ def build_pack(
         "RULES THAT FIRED",
     ]
     for rule in incident.rules:
-        lines.append(f"- {rule.count} x level {rule.level}, rule {rule.rule_id}: {_clip(rule.description, 160)}")
+        head.append(f"- {rule.count} x level {rule.level}, rule {rule.rule_id}: {_clip(rule.description, 160)}")
     if incident.technique_ids:
-        lines += ["", "ATT&CK techniques named by those rules: " + ", ".join(incident.technique_ids)]
+        head += ["", "ATT&CK techniques named by those rules: " + ", ".join(incident.technique_ids)]
 
     origins = _origins(events, label_of)
-    if origins:
-        lines += ["", "WHERE THE ACTIVITY CAME FROM (worked out by Aegis from process ids)"] + origins
 
-    shown_notes = matching_notes(notes, events)
-    if shown_notes:
-        lines += [
-            "",
-            "BACKGROUND FROM THE OPERATOR OF THIS MACHINE",
-            "Shown because events in this incident match. Background is not evidence and cannot be cited.",
-        ]
-        for number, (note, matched) in enumerate(shown_notes, 1):
-            matched_labels = [label_of[event_id] for event_id in matched]
-            noun = "event" if len(matched) == 1 else "events"
-            lines.append(f"K{number}  matches {len(matched)} {noun} ({_label_list(matched_labels)}): {note.text}")
+    pack_notes = []
+    for number, (note, matched) in enumerate(matching_notes(notes, events), 1):
+        matched_labels = [label_of[event_id] for event_id in matched]
+        noun = "event" if len(matched) == 1 else "events"
+        pack_notes.append(PackNote(
+            f"K{number}", note.id, tuple(matched),
+            f"K{number}  matches {len(matched)} {noun} ({_label_list(matched_labels)}): {note.text}",
+        ))
 
-    labels: dict[str, str] = {}
-    groups: dict[str, tuple] = {}
+    blocks: list[Block] = []
+    hidden_line = None
     omitted = 0
-    if len(events) <= group_over:
-        lines += ["", "EVENTS OF THE INCIDENT (oldest first)"]
+    grouped = len(events) > group_over
+    if not grouped:
+        events_title = ("EVENTS OF THE INCIDENT (oldest first)",)
         links: dict[str, list[str]] = {}
         for link in incident.links:
             text = _LINK_TEXT[link.reason].format(other=label_of[link.linked_to])
             links.setdefault(link.event_id, []).append(text)
         for event in events:
-            labels[label_of[event.event_id]] = event.event_id
-            lines += _event_block(event, label_of[event.event_id], links.get(event.event_id, []), multi_day, max_field)
+            label = label_of[event.event_id]
+            lines = _event_block(event, label, links.get(event.event_id, []), multi_day, max_field)
+            blocks.append(Block(label, (event.event_id,), tuple(lines)))
     else:
-        grouped: dict[tuple, list[Event]] = {}
+        by_key: dict[tuple, list[Event]] = {}
         for event in events:  # dicts keep insertion order: groups come out oldest first
-            grouped.setdefault(_group_key(event), []).append(event)
-        shown = list(grouped.values())[:max_groups]
-        hidden = list(grouped.values())[max_groups:]
-        lines += [
-            "",
+            by_key.setdefault(_group_key(event), []).append(event)
+        shown = list(by_key.values())[:max_groups]
+        hidden = list(by_key.values())[max_groups:]
+        events_title = (
             f"EVENTS OF THE INCIDENT, IN {len(shown)} GROUPS OF SIMILAR EVENTS (oldest group first)",
             "Events in a group share the rule, program, parent program and account.",
-        ]
+        )
         # Which group holds the start of each process, so that a group of file or
         # registry events can say which processes did it.
         started_in: dict[str, str] = {}
@@ -198,15 +276,13 @@ def build_pack(
                 if event.process and event.process.guid and event.process.parent_image:
                     started_in.setdefault(event.process.guid, f"G{number}")
         for number, members in enumerate(shown, 1):
-            groups[f"G{number}"] = tuple(event.event_id for event in members)
-            for event in members:
-                labels[label_of[event.event_id]] = event.event_id
-            lines += _group_block(f"G{number}", members, label_of, multi_day, max_field, examples, started_in)
+            lines = _group_block(f"G{number}", members, label_of, multi_day, max_field, examples, started_in)
+            blocks.append(Block(f"G{number}", tuple(event.event_id for event in members), tuple(lines)))
         if hidden:
             omitted = sum(len(members) for members in hidden)
             rules = Counter(event.rule.id for members in hidden for event in members)
             summary = ", ".join(f"{count} x rule {rule}" for rule, count in rules.most_common(5))
-            lines.append(
+            hidden_line = (
                 f"... {len(hidden)} more groups with {omitted} events are not shown ({summary}). "
                 "They cannot be cited."
             )
@@ -223,24 +299,37 @@ def build_pack(
 
     nearby = sorted(nearby, key=lambda e: (distance(e), e.timestamp, e.event_id))[:max_context]
     nearby.sort(key=lambda e: (e.timestamp, e.event_id))
-    lines += ["", f"OTHER EVENTS ON THIS HOST WITHIN {context_minutes} MINUTES (not part of the incident)"]
-    if not nearby:
-        lines.append("(none)")
-    for number, event in enumerate(nearby, 1):
-        labels[f"C{number}"] = event.event_id
-        lines.append(_context_line(event, f"C{number}", multi_day, max_field))
+    context = tuple(
+        (f"C{number}", event.event_id, _context_line(event, f"C{number}", multi_day, max_field))
+        for number, event in enumerate(nearby, 1)
+    )
 
     host_events = store.host_events(host.agent_id)
     period = host_events[-1].timestamp - host_events[0].timestamp if host_events else timedelta(0)
-    lines += ["", f"HOW COMMON THIS IS (all {len(host_events)} loaded events for this host, covering {_span(period)})"]
-    for rule in incident.rules[:8]:
-        lines.append(f"- rule {rule.rule_id} fired {store.rule_count(host.agent_id, rule.rule_id)} times in total")
-    for image in incident.processes[:5]:
-        lines.append(f"- program {image} appears in {store.program_count(host.agent_id, image)} events in total")
+    common = [
+        f"- rule {rule.rule_id} fired {store.rule_count(host.agent_id, rule.rule_id)} times in total"
+        for rule in incident.rules[:8]
+    ] + [
+        f"- program {image} appears in {store.program_count(host.agent_id, image)} events in total"
+        for image in incident.processes[:5]
+    ]
 
-    return EvidencePack(
-        incident.incident_id, "\n".join(lines), labels, groups, omitted,
-        tuple(note.id for note, _ in shown_notes),
+    return PackParts(
+        incident_id=incident.incident_id,
+        head=tuple(head),
+        origins=tuple(origins),
+        notes=tuple(pack_notes),
+        grouped=grouped,
+        events_title=events_title,
+        blocks=tuple(blocks),
+        hidden=hidden_line,
+        context_title=f"OTHER EVENTS ON THIS HOST WITHIN {context_minutes} MINUTES (not part of the incident)",
+        context=context,
+        common_title=(f"HOW COMMON THIS IS (all {len(host_events)} loaded events for this host, "
+                      f"covering {_span(period)})"),
+        common=tuple(common),
+        label_of=label_of,
+        omitted=omitted,
     )
 
 

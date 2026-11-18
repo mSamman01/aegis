@@ -1,6 +1,7 @@
 """Compare: put the verdicts of different model setups side by side.
 
-A model setup ("variant") is a model name plus whether thinking was on.
+A model setup ("variant") is a model name plus the version of the instructions,
+whether it ran in agent mode, and whether thinking and operator notes were on.
 Nothing here calls a model; it only reads verdicts that were already saved.
 
 With labels - what each incident really was, decided by a human - the
@@ -36,8 +37,10 @@ _ALARM = (VerdictLabel.SUSPICIOUS, VerdictLabel.MALICIOUS)
 
 
 def variant_name(run: ModelRun) -> str:
-    """A model setup: model, version of the instructions, and what was switched on."""
+    """A model setup: model, version of the instructions, agent mode, and what was switched on."""
     name = f"{run.model} v{run.prompt_version}"
+    if run.mode != "single_call":
+        name += f" {run.mode}"
     notes = ""
     if run.knowledge:
         notes = f" +notes:{run.knowledge_id}" if run.knowledge_id else " +notes"

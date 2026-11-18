@@ -91,7 +91,7 @@ class ModelRun:
     """How the answer was produced - enough to reproduce or compare it."""
 
     model: str
-    mode: str  # "single_call" for now
+    mode: str  # "single_call", or "agent1" (agent mode, first version of its protocol: aegis.agent)
     thinking: bool
     prompt_sha256: str
     replayed: bool = False  # True if the answer came from a recording
@@ -102,6 +102,7 @@ class ModelRun:
     duration_ms: int | None = None
     prompt_tokens: int | None = None
     output_tokens: int | None = None
+    steps: tuple[str, ...] = ()  # agent mode: the tools the model used, in order, e.g. "get_event E3"
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,8 @@ class Verdict:
         attempt = self.run.attempt
         if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
             raise ContractError(f"run attempt must be a whole number from 1, got {attempt!r}")
+        if not isinstance(self.run.steps, tuple) or not all(isinstance(step, str) for step in self.run.steps):
+            raise ContractError("run steps must be a list of text")
         if not isinstance(self.created_at, datetime) or self.created_at.utcoffset() != timedelta(0):
             raise ContractError("created_at must be an aware UTC datetime")
         for finding in self.findings:

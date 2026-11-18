@@ -77,6 +77,15 @@ python -m unittest
   `--think` lets the model reason first; `--model qwen3:8b` picks another model.
 * `investigate --all --repeat 3` asks each question three times. A small model
   does not always give the same answer twice, and that is worth knowing.
+* `investigate --agent` is agent mode: the model starts from the incident's
+  outline (the rules that fired and one line per event) and opens the
+  evidence itself, one read-only tool per turn - `get_event E3`,
+  `where_from`, `nearby_events`, `how_common` - up to 10 tools, then
+  answers. Each tool returns a piece of the same pack the single call is
+  given, only what it opened can be cited, and its answer goes through the
+  same checker and policy. `--show-prompt --agent` prints the outline. It is
+  an experiment until it beats the single call: `decide` keeps using the
+  single call's verdict where there is one (D44).
 * `compare` lines up the saved verdicts by model setup. With `--expect benign`
   or a labels file (`{"inc-...": "attack"}`) it scores them: false alarms on
   benign incidents, attacks caught and missed, and how often the model changed
@@ -119,7 +128,10 @@ python -m unittest
   and act path to a stand-in VM. It also checks that no case name or label
   ever reaches a prompt. It writes `runs\eval\report.md`, and each
   case can be opened with `serve --dir runs\eval\<case>`. `--investigate`
-  also asks the model about cases it has not seen (needs Ollama). It exits
+  also asks the model about cases it has not seen (needs Ollama);
+  `--investigate --agent` asks the same incidents in agent mode, and the
+  report puts the two modes side by side on the incidents both answered.
+  The probe also sends hostile tool requests through agent mode. It exits
   with 1 if anything unsafe or unexpected turns up.
 * `export` writes the dashboard of one run folder as plain .html files with
   relative links, to open from disk or put on any static host. Every page
@@ -252,6 +264,7 @@ aegis/
   web/         the pages (escaped by default, no JavaScript) and the stylesheet
   export.py    a static copy of the dashboard; demo.py builds the public demo
   investigate.py  asks the model once, then checks its answer
+  agent.py     agent mode: the model opens the evidence with read-only tools
   compare.py   lines up and scores saved verdicts
   store.py     read / write events, incidents and verdicts as JSON lines
   doctor.py    environment checks

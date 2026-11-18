@@ -12,7 +12,8 @@ GitHub Pages can publish as it is:
 
 Everything is rebuilt from what is in git: the synthetic alerts
 (data/samples), the policy, the operator notes, and the model's answers,
-recorded once with qwen3:4b (data/samples/recordings) and replayed here. A
+recorded once with qwen3:4b (data/samples/recordings) and replayed here - in
+the single call, and in agent mode once its recordings are there (D44). A
 prompt without a recording stops the build instead of asking a model, so the
 build needs no Ollama, no VM and no network, and it fails when the code has
 changed what the model would be asked - then the recordings must be made
@@ -35,6 +36,7 @@ from typing import Callable
 
 from aegis import evalcases
 from aegis import evaluate as evaluating
+from aegis.agent import MODE as AGENT_MODE
 from aegis.execute import GateExecutor
 from aegis.export import WEB_DIR, check_site, export_run
 from aegis.investigate import InvestigationError
@@ -80,10 +82,13 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
         evals = work / "eval"
         for spec in specs:
             _copy_recordings(spec["name"], evals / spec["name"] / "recordings")
-        say(f"Replaying the recorded answers for {len(specs)} cases")
+        setups = [{"model": MODEL, "repeat": REPEAT, "notes": notes, "client": _no_model}]
+        if agent_recorded():  # once any agent answer is committed, every one must be there
+            setups.append(dict(setups[0], mode=AGENT_MODE))
+        say(f"Replaying the recorded answers for {len(specs)} cases"
+            + (" (single call and agent mode)" if len(setups) > 1 else ""))
         outcome = evaluating.run(work / "cases", evals, policy, policy_file, say=lambda text: None,
-                                 investigate={"model": MODEL, "repeat": REPEAT, "notes": notes,
-                                              "client": _no_model})
+                                 investigate=setups)
         broken = [f"{r.name}: {c}" for r in outcome["results"] for c, ok, _ in r.expectations if not ok]
         broken += [v for r in outcome["results"] for v in r.violations]
         if broken or outcome["leaks"][1]:
@@ -119,6 +124,11 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
         raise DemoError(f"{len(problems)} problems in the site, first: {problems[0]}")
     return {"pages": pages_written, "cases": len(specs), "twins": len(twins), "locked": locked,
             "out": out}
+
+
+def agent_recorded() -> bool:
+    """True if agent-mode answers have been recorded for the demo (data/samples/recordings)."""
+    return any(RECORDINGS.glob(f"*/*.{AGENT_MODE}*.json"))
 
 
 def _fresh(out: Path) -> None:
@@ -207,8 +217,11 @@ def _front(specs: list[dict], locked: dict) -> object:
             tag("li", tag("a", "Every incident in the sample", href=f"sample/{links.home()}"), ": ",
                 sample["about"]),
             tag("li", tag("a", "The evaluation", href="evaluation/index.html"), ": how the rules and the "
-                "model score on the sample and the twins below, and the safety probe, which sends hostile "
-                "model answers down the real path to see what reaches the gate.")),
+                "model score on the sample and the twins below",
+                " - the model asked in one call and, in agent mode, opening the evidence itself one read-only "
+                "tool at a time -" if agent_recorded() else "",
+                " and the safety probe, which sends hostile model answers down the real path to see what "
+                "reaches the gate.")),
         tag("h2", "Twins: the same stories, made harmless"),
         tag("p", "Each twin is a story from the sample, edited so that it is harmless - or, for ssh-injected, "
                  "still an attack, with a message in the evidence telling the AI to call it benign. They show "

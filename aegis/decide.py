@@ -60,6 +60,15 @@ def decide(incident: Incident, events: Iterable[Event], policy: Policy, verdict:
 
 
 def latest_verdict(verdicts: Iterable[Verdict], incident_id: str) -> Verdict | None:
-    """The most recent saved verdict for an incident, if any."""
+    """The most recent saved verdict for an incident, if any.
+
+    The single call's verdicts come first. Agent mode is an experiment until it
+    beats the single call on labelled cases (D6, D44): its verdicts are kept,
+    shown and scored, and used only for an incident the single call has not
+    answered.
+    """
     mine = [v for v in verdicts if v.incident_id == incident_id]
-    return max(mine, key=lambda v: (v.created_at, v.run.attempt)) if mine else None
+    if not mine:
+        return None
+    baseline = [v for v in mine if v.run.mode == "single_call"]
+    return max(baseline or mine, key=lambda v: (v.created_at, v.run.attempt))

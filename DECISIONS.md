@@ -783,3 +783,77 @@ SENTINEL can be looked at without running it; Aegis could not. Now:
 * Any page - served, exported or in the demo - can be printed or saved as
   PDF from the browser: a print stylesheet drops the navigation and the
   footer and does not split a table row, an event or an action across pages.
+
+## D44 - Agent mode: the model opens the evidence itself (2026-11-18)
+SENTINEL's tool-calling agent did not beat its single call, and D6/D14 made
+the single call the baseline agent mode has to beat. `investigate --agent`
+and `evaluate --investigate --agent` now ask the other way:
+
+* Same evidence, handed out in pieces. `evidence.build_parts` splits the
+  pack into its sections (outline, events or groups, where the activity came
+  from, nearby events, how common it is), and each tool returns one section
+  word for word, under the pack's own labels. The single call's pack is those
+  sections joined, byte for byte as before: 768 packs (every incident of the
+  11 cases, four sizes each) came out identical, and all 123 recorded answers
+  of the current setup still replay. So the two modes differ only in who
+  chooses what to read. Tools that reach further than the pack (other days,
+  an account's history) would change two things at once; that is a later
+  experiment if this one earns it.
+* Tools: `get_event <E3 or G2>`, `where_from` (offered only when a process
+  has a known parent), `nearby_events`, `how_common`, and `answer`. Each turn
+  the model writes a small JSON step through Ollama's structured output - the
+  same path as the single call's answer - rather than Ollama's native tool
+  calls: the schema allows only these tool names, nothing depends on how a
+  chat template parses tool calls, and a replay is exact. Code checks the
+  name again; anything else ("lock_account", a path or a shell command as a
+  label) gets a refusal and costs one of the 10 tool calls allowed.
+* The model starts from the outline: the rules that fired and the first line
+  of each event (the line that heads its block in the pack). Only what it
+  opened can be cited; the request for its answer lists those labels. A
+  finding citing an event seen only in the outline is removed by the
+  checker, so answering without looking supports nothing and is
+  inconclusive. Operator notes appear next to the event they match, when it
+  is opened (D21).
+* The instructions are the single call's rules 1-8 word for word, with three
+  marked changes: the opening paragraph and the tools, "only labels of
+  evidence you have opened count", and when the final answer is given. They
+  do not tell the model to open everything: what it chooses to open is part
+  of what is measured. The protocol is versioned in the mode name, `agent1`;
+  prompt_version stays 4 (same rules, same evidence), so the setup reads
+  `qwen3:4b v4 agent1 +notes:8ec64c`.
+* Room: before each result is sent, a cautious estimate checks that it and
+  the answer still fit the context window; if not, the model is told there
+  is no room and asked to answer. On very large incidents the agent can
+  therefore see less than the single call, and the evaluation counts those
+  runs ("cut short"). A prompt that really fills the window still makes the
+  verdict inconclusive, as before (D17).
+* Same checker, same policy: the final answer has the single call's shape
+  and goes through `check_answer` unchanged; `decide`, `approve` and `act`
+  are unchanged. `decide` keeps using the single call's verdict where one
+  exists: agent mode is an experiment until it beats the baseline (D6), so
+  its answers are kept, shown (the dashboard lists the tools the model used,
+  in order) and scored, and used for a decision only where the single call
+  has not answered.
+* Recordings: one file per run with every exchange's prompt hash and answer,
+  and the final request. A replay runs the loop again and refuses at the
+  first exchange whose prompt differs, so it proves the tools still return
+  exactly what they returned. The leak check now reads every message of
+  every recording, and the agent's outline for every incident.
+* The probe attacks the new channel too: four scripted agents ask for tools
+  that would change something, put paths and shell commands where a label
+  goes, never stop asking, or answer without opening anything, and each then
+  answers "lock root". Result: no tool outside the read-only four ran, the
+  longest run took 11 requests (10 tools and the answer), no file in the
+  probe folder changed, nothing reached the gate, and "lock root" was denied
+  by the policy (removed by the checker where nothing had been opened).
+  `evaluate` fails if any of that breaks.
+* Measured by `evaluate`: a new table puts each agent setup beside the
+  single call with the same model, instructions and notes, counted only on
+  incidents both answered - attacks caught, false alarms, twins flagged,
+  inconclusive, unstable, findings and proposals removed, seconds per run,
+  tools per run, and runs that opened every event, none, or were cut short.
+  The demo replays agent mode too once its recordings are committed, and
+  then every one of them must be there.
+
+Not measured yet: asking takes one request per tool plus the answer, about
+123 runs on the laptop.

@@ -25,11 +25,13 @@ from aegis.decide import decide, latest_verdict
 from aegis.execute import GateExecutor
 from aegis.knowledge import DEFAULT_NOTES_FILE, load_notes
 from aegis.policy import DEFAULT_POLICY_FILE, load_policy
+from aegis import agent
 from aegis.investigate import (
     DEFAULT_NUM_CTX,
     InvestigationError,
     investigate,
     pack_for_model,
+    parts_for_model,
 )
 from aegis.llm import default_model
 from aegis.store import (
@@ -129,6 +131,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     inv.add_argument("--model", default=None, help="Ollama model to use (default: qwen3:4b, or AEGIS_MODEL)")
     inv.add_argument("--think", action="store_true",
                      help="let the model think before answering (much slower; a small model may never finish)")
+    inv.add_argument("--agent", action="store_true",
+                     help="agent mode: the model opens the evidence itself, one read-only tool at a time")
     inv.add_argument("--replay", action="store_true", help="reuse the recorded answer instead of calling the model")
     inv.add_argument("--repeat", type=int, default=1, help="ask the same question this many times (default: 1)")
     inv.add_argument("--knowledge", type=Path, default=None,
@@ -203,6 +207,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     ev.add_argument("--model", default=None, help="with --investigate: Ollama model (default: qwen3:4b)")
     ev.add_argument("--repeat", type=int, default=3, help="with --investigate: answers per incident (default: 3)")
     ev.add_argument("--no-knowledge", action="store_true", help="with --investigate: no operator notes")
+    ev.add_argument("--agent", action="store_true",
+                    help="with --investigate: ask in agent mode (the model opens the evidence one tool at a time)")
 
     exp = commands.add_parser("export", help="write a static copy of the dashboard (plain files, no server)")
     exp.add_argument("--dir", type=Path, default=RUN_DIR, help=DIR_HELP)
@@ -441,6 +447,10 @@ def _investigate(args: argparse.Namespace) -> int:
     if not 1 <= args.repeat <= 20:
         print("error: --repeat must be between 1 and 20", file=sys.stderr)
         return 2
+    if args.agent and args.think:
+        print("error: agent mode runs with thinking off (thinking never finished on this hardware, D20)",
+              file=sys.stderr)
+        return 2
     incidents = _load(read_incidents, args.incidents, "run 'python -m aegis correlate' first")
     if incidents is None:
         return 2
@@ -476,7 +486,11 @@ def _investigate(args: argparse.Namespace) -> int:
 
     if args.show_prompt:
         for incident in chosen:
-            print(_ascii(pack_for_model(incident, store, args.num_ctx, notes or ()).text))
+            if args.agent:  # what the model starts from; the rest it has to open itself
+                print(_ascii(agent.Desk(parts_for_model(incident, store, args.num_ctx, notes or ()))
+                             .outline(agent.MAX_TOOL_CALLS)))
+            else:
+                print(_ascii(pack_for_model(incident, store, args.num_ctx, notes or ()).text))
             print()
         return 0
 
@@ -487,11 +501,17 @@ def _investigate(args: argparse.Namespace) -> int:
                   f"{_ascii(_clip(incident.title, 60))}", flush=True)
         for attempt in range(1, args.repeat + 1):
             try:
-                result = investigate(
-                    incident, store, model=model, think=args.think, num_ctx=args.num_ctx,
-                    recordings=args.recordings, replay=args.replay, attempt=attempt, notes=notes,
-                    timeout=args.timeout,
-                )
+                if args.agent:
+                    result = agent.investigate_agent(
+                        incident, store, model=model, num_ctx=args.num_ctx, recordings=args.recordings,
+                        replay=args.replay, attempt=attempt, notes=notes, timeout=args.timeout,
+                    )
+                else:
+                    result = investigate(
+                        incident, store, model=model, think=args.think, num_ctx=args.num_ctx,
+                        recordings=args.recordings, replay=args.replay, attempt=attempt, notes=notes,
+                        timeout=args.timeout,
+                    )
             except InvestigationError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -504,7 +524,8 @@ def _investigate(args: argparse.Namespace) -> int:
             counts[verdict.label.value] += 1
             one_line = (f"-> {verdict.label.value.upper()} ({verdict.confidence.value} confidence), "
                         f"{_count(len(verdict.findings), 'finding')}, {len(verdict.rejected)} removed by the checker"
-                        f"{_timing(verdict)}")
+                        + (f", {_count(len(verdict.run.steps), 'tool')}" if args.agent else "")
+                        + _timing(verdict))
             if args.all:
                 print(f"        {one_line}", flush=True)
             elif attempt == 1:
@@ -517,7 +538,8 @@ def _investigate(args: argparse.Namespace) -> int:
         print()
         print("Verdicts  " + ", ".join(f"{count} {label}" for label, count in sorted(counts.items())))
         print(f"Saved     {args.out}")
-        print(f"Read one in full:  python -m aegis investigate {chosen[0].incident_id[:8]} --replay{extra}")
+        print(f"Read one in full:  python -m aegis investigate {chosen[0].incident_id[:8]} --replay"
+              f"{' --agent' if args.agent else ''}{extra}")
         print(f"Side by side:      python -m aegis compare{extra}")
     return 0
 
@@ -618,7 +640,8 @@ def _evaluate(args: argparse.Namespace) -> int:
             notes = _load(load_notes, DEFAULT_NOTES_FILE, "")
             if notes is None:
                 return 2
-        investigate = {"model": args.model or default_model(), "repeat": args.repeat, "notes": notes}
+        investigate = {"model": args.model or default_model(), "repeat": args.repeat, "notes": notes,
+                       "mode": agent.MODE if args.agent else "single_call"}
     try:
         outcome = evaluating.run(cases, args.out, policy, policy_path, investigate=investigate,
                                  say=lambda text: print(_ascii(text), flush=True))
@@ -664,13 +687,21 @@ def _evaluate(args: argparse.Namespace) -> int:
     print(f"Probe         {sum(1 for row in probe.rows if row.hostile)} hostile proposals, "
           f"{probe.hostile_executed} carried out; the sober control was "
           f"{'carried out after approval' if probe.control_executed else 'NOT carried out'}")
+    print(f"Agent probe   {len(probe.agent_rows)} hostile tool scripts: "
+          + ("only read-only tools ran, every run ended in time, no file changed, nothing reached the gate"
+             if probe.agent_ok else "SOMETHING GOT THROUGH (see the report)"))
+    for row in outcome["modes"]:
+        if row.mode != "single_call" and row.runs:
+            print(_ascii(f"Agent mode    {row.data}: {row.variant}, {row.runs} runs on {row.incidents} incidents "
+                         f"answered in both modes (side by side in the report)"))
     missing = [r.name for r in results if not r.models]
     if missing:
         print(_ascii(f"Model         no verdicts yet for {len(missing)} cases ({', '.join(missing)})"))
         print("              to ask it, on the laptop with Ollama running:  python -m aegis evaluate --investigate")
     print(_ascii(f"Report        {outcome['out'] / 'report.md'}"))
     print(_ascii(f"              open a case in the dashboard:  python -m aegis serve --dir {outcome['out']}{os.sep}<case>"))
-    bad = failed or violations or unsafe or leaks or probe.hostile_executed or not probe.control_executed
+    bad = (failed or violations or unsafe or leaks or probe.hostile_executed or not probe.control_executed
+           or not probe.agent_ok)
     return 1 if bad else 0
 
 
@@ -1043,7 +1074,8 @@ def _verdict_view(incident: Incident, verdict: Verdict, pack: EvidencePack) -> s
         return textwrap.wrap(text, width=100, initial_indent=prefix, subsequent_indent=indent) or [prefix.rstrip()]
 
     run = verdict.run
-    how = f"{run.model}, single call, thinking {'on' if run.thinking else 'off'}"
+    mode = "single call" if run.mode == "single_call" else f"agent mode ({run.mode})"
+    how = f"{run.model}, {mode}, thinking {'on' if run.thinking else 'off'}"
     if run.duration_ms is not None:
         how += f"  ({run.duration_ms / 1000:.1f} s"
         if run.prompt_tokens is not None and run.output_tokens is not None:
@@ -1067,6 +1099,9 @@ def _verdict_view(incident: Incident, verdict: Verdict, pack: EvidencePack) -> s
         f"Verdict   {verdict.label.value.upper()}   (confidence: {verdict.confidence.value})",
     ]
     lines += wrapped("Summary   ", verdict.summary or "(none)", " " * 10)
+    if run.mode != "single_call":
+        lines += [""] + wrapped("Opened    ", "; ".join(run.steps) or "nothing (it answered from the outline)",
+                                " " * 10)
     reasoning = verdict.reasoning
     steps = [
         ("What happened", reasoning.what_happened),

@@ -538,6 +538,8 @@ def _verdict_data(snap: Snapshot, verdict: Verdict, label_of: dict) -> dict:
     return {
         "ai_written": True,
         "model": variant_name(run),
+        "mode": run.mode,
+        "steps": list(run.steps),
         "attempt": run.attempt,
         "created_at": format_ts(verdict.created_at),
         "replayed": run.replayed,

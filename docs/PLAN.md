@@ -104,7 +104,8 @@ where events match them. Every exchange is recorded and can be replayed;
 Result with qwen3:4b, instructions v4 and four operator notes, three runs per
 incident: 58 of 75 runs on harmless real incidents called benign (77%), and
 9 of 9 runs on the synthetic attacks caught. Tool-calling agent mode was not
-tried; the single call is the baseline it would have to beat.
+tried then; the single call is the baseline it has to beat (agent mode came
+later: D44).
 
 **4. Risk score + policy - done.**
 `python -m aegis decide <id>` scores an incident 0-100 from eight fixed rules
@@ -184,7 +185,12 @@ No case name or label reached any of the 76 prompts checked.
    stand-in gate. CI runs the tests on Windows and Linux and publishes the
    demo to GitHub Pages from `main`. Results on the real lab, in counts:
    `docs/eval-results.md`.
-2. Agent mode: the investigator asks for evidence through read-only tools,
-   measured against the single call.
+2. Agent mode - written (2026-11-18, D44), waiting for its measurement.
+   `investigate --agent`: the model starts from the outline and opens the
+   pack's own sections through four read-only tools, one per turn, up to 10;
+   only what it opened can be cited, and the answer goes through the same
+   checker and policy. `evaluate --investigate --agent` asks the same
+   incidents and puts both modes side by side on the incidents both
+   answered; the probe also attacks the tool channel.
 3. Posture advice for the monitored PC (SCA and vulnerability findings),
    advice only.

@@ -36,7 +36,7 @@ from aegis.contracts.verdict import (
     VerdictLabel,
     _TECHNIQUE_RE,
 )
-from aegis.evidence import EvidencePack, EvidenceStore, build_pack, incident_targets, target_key
+from aegis.evidence import EvidencePack, EvidenceStore, PackParts, build_parts, incident_targets, target_key
 from aegis.knowledge import Note, notes_fingerprint
 from aegis.llm import LLMError, chat
 
@@ -218,6 +218,17 @@ def pack_for_model(
     it off without saying so. Evidence must never vanish silently, so the pack
     is sized here, and what is left out is stated inside the pack.
     """
+    return parts_for_model(incident, store, num_ctx, notes).pack()
+
+
+def parts_for_model(
+    incident: Incident, store: EvidenceStore, num_ctx: int = DEFAULT_NUM_CTX, notes: Sequence[Note] = ()
+) -> PackParts:
+    """The sections of the pack that ``pack_for_model`` would build: the same size, the same detail.
+
+    Agent mode uses this, so that it can open exactly the evidence the single
+    call is shown, never more and never less.
+    """
     budget_chars = max(4000, int((num_ctx - 2600) * CHARS_PER_TOKEN))
     # Tried in order, most detail first; the first one that fits is used.
     attempts = (
@@ -227,12 +238,12 @@ def pack_for_model(
         {"examples": 1, "max_context": 2, "max_field": 160, "max_groups": 12},
         {"examples": 1, "max_context": 0, "max_field": 100, "max_groups": 6, "group_over": 0},
     )
-    pack = build_pack(incident, store, notes=notes)
+    parts = build_parts(incident, store, notes=notes)
     for options in attempts[1:]:
-        if len(pack.text) <= budget_chars:
+        if len(parts.pack().text) <= budget_chars:
             break
-        pack = build_pack(incident, store, notes=notes, **options)
-    return pack
+        parts = build_parts(incident, store, notes=notes, **options)
+    return parts
 
 
 def prompt_hash(request: dict) -> str:
