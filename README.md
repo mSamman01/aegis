@@ -226,11 +226,19 @@ ssh <you>@192.168.56.105
 sudo bash setup-manager.sh "$(cat aegis_feed.pub)"      # on the manager
 ```
 
-Then, on the laptop, `python -m aegis watch` in one window and
-`python -m aegis serve --dir runs\live` in another. The position in the
-manager's file is saved after every batch, so stopping and starting again
-carries on where it stopped; anything the feed could not read is listed on
-the dashboard, never skipped silently.
+Then, on the laptop, run the feed and the dashboard side by side:
+
+```powershell
+python -m aegis watch                      # one window: pulls new alerts from the manager
+python -m aegis serve --dir runs\live      # another window: serves the dashboard
+```
+
+Then open **http://127.0.0.1:8765/** in a browser. `watch` works out the
+incidents again after every batch, so new ones appear on the dashboard as the
+alerts arrive - pick a time under *Reload* on the incidents page to refresh on
+its own. The position in the manager's file is saved after every batch, so
+stopping and starting again carries on where it stopped; anything the feed
+could not read is listed on the dashboard, never skipped silently.
 
 ### The policy
 
@@ -341,3 +349,8 @@ runs/          pipeline output (ignored by git)
 The sample alerts are synthetic. They are shaped like Wazuh 4.x alerts and tell
 one small story (an SSH brute force on a lab machine, plus some activity on a
 Windows laptop), but the hosts, users, hashes and the CVE are made up.
+
+## License
+
+MIT - see [LICENSE](LICENSE). The code is free to use, modify and share with
+attribution; it comes with no warranty.
