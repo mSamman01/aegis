@@ -189,6 +189,21 @@ class DemoTests(unittest.TestCase):
         self.assertIn("turns parts of Microsoft Defender off", removed[0])
         self.assertNotIn("twins/ssh-injected/posture.html", self.html)  # the twins carry no posture pages
 
+    def test_the_outside_attacker_scenario_shows_a_real_firewall_block(self):
+        blocked = self.built["blocked"]
+        self.assertEqual(blocked["actions"], ["lock_account", "block_ip"])
+        page = self.html[f"response/incident-{blocked['incident']}.html"]
+        self.assertIn("block_ip 192.168.56.66", page)
+        self.assertIn("address blocked at the firewall", page)
+        self.assertIn("blocked=no", page)   # before
+        self.assertIn("blocked=yes", page)  # after
+        self.assertIn("lock_account svc_deploy", page)
+        self.assertIn("account locked and expired", page)
+        # the front page links to it, and frames it as the block the sample's laptop source cannot get
+        front = self.html["index.html"]
+        self.assertIn(f'href="response/incident-{blocked["incident"]}.html"', front)
+        self.assertIn("a network block the sample", front)  # the laptop-source point
+
     def test_a_missing_recording_stops_the_build_instead_of_asking_a_model(self):
         empty = self.root / "no-recordings"
         empty.mkdir()

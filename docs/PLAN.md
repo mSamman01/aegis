@@ -184,8 +184,10 @@ No case name or label reached any of the 76 prompts checked.
    builds the public site from the synthetic sample, its twins and 39
    recorded model answers, with a simulated approval and a lock on a
    stand-in gate. CI runs the tests on Windows and Linux and publishes the
-   demo to GitHub Pages from `main`. Results on the real lab, in counts:
-   `docs/eval-results.md`.
+   demo to GitHub Pages from `main`. Since D50 the demo also shows a block
+   carried out end to end - a synthetic outside attacker whose address is
+   blocked at the firewall, the capability D49 proved. Results on the real
+   lab, in counts: `docs/eval-results.md`.
 2. Agent mode - done (2026-11-18, D44-D46). `investigate --agent`: the
    model starts from the outline and opens the pack's own sections one
    choice at a time, up to 10; only what it opened can be cited, and the

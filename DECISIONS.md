@@ -1142,3 +1142,27 @@ attacker rather than a stand-in. The laptop stays advice-only (D7); actions
 still run only on the disposable lab VM, only the fixed catalog, only with a
 recorded human approval, and protected accounts and addresses can never be
 targeted whatever is approved.
+
+## D50 - The demo shows a block end to end (2026-11-19)
+The public demo (D43) only showed the lock. Its sample attack comes from the
+laptop (192.168.56.1), which the policy protects, so the block there is
+correctly denied - good for the safety story, but it meant a visitor never
+saw `block_ip` actually run, the capability proven in D49.
+
+Rather than change the sample (which would need every model recording made
+again), the demo now builds a second, self-contained scenario:
+`data/samples/block_scenario.jsonl`, an SSH brute force -> login ->
+`sudo cat /etc/shadow` against `svc_deploy` from a blockable lab address
+(192.168.56.66). It is decided, approved and acted entirely by code - no
+model, so no recording - and exported to `site/response/`. The incident
+scores critical (85) and both `lock_account svc_deploy` and
+`block_ip 192.168.56.66` are carried out against the stand-in gate
+(`probe.RecordingGate`, now answering the firewall verbs too), each with the
+same before/after proof and audit entries the real run showed. Its AI stage
+says plainly it was not asked: the response rests on the rules, not the model.
+
+The front page frames the contrast: the sample's attack cannot earn a network
+block because its source is the laptop Aegis runs on; this one can, because
+the attacker is a separate machine - the exact gap D33 named and D49 closed.
+`_respond` is now general (a picker and a list of actions), and the build is
+100 pages. No real data is involved, so it is safe to publish (D8).

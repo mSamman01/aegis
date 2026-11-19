@@ -87,16 +87,26 @@ class RecordingGate:
     def __init__(self) -> None:
         self.requests: list[str] = []
         self.locked: set[str] = set()
+        self.blocked: set[str] = set()
 
     def __call__(self, command, **kwargs) -> subprocess.CompletedProcess:
         request = command[-1]
         self.requests.append(request)
-        verb, _, user = request.partition(" ")
+        verb, _, target = request.partition(" ")
         if verb == "lock":
-            self.locked.add(user)
-        state = "password=L account_expires=Jan_02,_1970" if user in self.locked else \
-            "password=P account_expires=never"
-        return subprocess.CompletedProcess(command, 0, f"user={user} {state} processes=0\n", "")
+            self.locked.add(target)
+        elif verb == "unlock":
+            self.locked.discard(target)
+        elif verb == "block":
+            self.blocked.add(target)
+        elif verb == "unblock":
+            self.blocked.discard(target)
+        if verb in ("status", "lock", "unlock"):
+            state = "password=L account_expires=Jan_02,_1970" if target in self.locked else \
+                "password=P account_expires=never"
+            return subprocess.CompletedProcess(command, 0, f"user={target} {state} processes=0\n", "")
+        blocked = "yes" if target in self.blocked else "no"  # block-status / block / unblock
+        return subprocess.CompletedProcess(command, 0, f"ip={target} blocked={blocked} connections=0\n", "")
 
 
 @dataclass

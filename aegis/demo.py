@@ -6,6 +6,8 @@ GitHub Pages can publish as it is:
     site/index.html             what Aegis is, and where to start
     site/sample/                the dashboard for the synthetic sample, after a
                                 simulated approval and lock of svc_backup
+    site/response/              an outside attacker: the account locked and the
+                                attacker's address blocked at the firewall
     site/twins/<name>/          the dashboard for each benign twin (and the
                                 injected attack)
     site/evaluation/index.html  the evaluation report for those cases
@@ -50,6 +52,7 @@ from aegis.web.pages import tag
 
 RECORDINGS = evalcases.PROJECT / "data" / "samples" / "recordings"
 POSTURE_SAMPLE = evalcases.PROJECT / "data" / "samples" / "posture_sample.json"
+BLOCK_SCENARIO = evalcases.PROJECT / "data" / "samples" / "block_scenario.jsonl"
 
 MODEL = "qwen3:4b"
 REPEAT = 3
@@ -57,7 +60,7 @@ REVIEWER = "demo"
 MARKER = ".aegis-site"
 NOTICE = ("Synthetic data: these alerts were written for this demo, not taken from a real network. The model's "
           "answers are recordings replayed while the site was built, and the lab VM that carried out the "
-          "approved lock is a stand-in that connects to nothing.")
+          "approved lock and firewall block is a stand-in that connects to nothing.")
 REPO = "https://github.com/mSamman01/aegis"
 POSTURE_NOTICE = (NOTICE + " The posture export was written by hand for the demo too: the programs and CVE ids are "
                   "made up, and one remediation text is planted to show the checker. Advice only; no AI model wrote "
@@ -66,6 +69,12 @@ POSTURE_NOTICE = (NOTICE + " The posture export was written by hand for the demo
 
 class DemoError(RuntimeError):
     """The demo could not be built as it should be."""
+
+
+def cli_main(args) -> int:
+    from aegis import cli
+
+    return cli.main([str(a) for a in args])
 
 
 def _no_model(request, timeout=None):
@@ -101,13 +110,29 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
             raise DemoError("the evaluation of the synthetic cases does not hold: " +
                             "; ".join(broken + outcome["leaks"][1]))
         say("Approving and carrying out the lock of svc_backup, against a stand-in for the lab VM")
-        locked = _respond(evals / "sample", policy_file)
+        locked = _respond(evals / "sample", policy_file,
+                          lambda incs: next(i for i in incs if "svc_backup" in i.accounts
+                                            and i.host.agent_id == "002"),
+                          [("lock_account", "svc_backup")])
+
+        say("An outside attacker: locking the account and blocking the address at the firewall")
+        block_run = work / "block-run"
+        for args in (("ingest", str(BLOCK_SCENARIO), "--dir", str(block_run)),
+                     ("correlate", "--dir", str(block_run))):
+            said = io.StringIO()
+            with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+                if cli_main(args) != 0:
+                    raise DemoError(f"the block scenario could not be built: {said.getvalue().strip()[-300:]}")
+        blocked = _respond(block_run, policy_file, lambda incs: max(incs, key=lambda i: len(i.event_ids)),
+                           [("lock_account", "svc_deploy"), ("block_ip", "192.168.56.66")])
 
         say(f"Writing the pages into {out}")
         sample_home = "../index.html"
         pages_written = export_run(evals / "sample", out / "sample", label="sample (synthetic)", notice=NOTICE,
                                    site_home=sample_home, policy_path=policy_file,
                                    posture=posturing.read_loaded(POSTURE_SAMPLE), posture_notice=POSTURE_NOTICE)
+        pages_written += export_run(block_run, out / "response", label="outside attacker (synthetic)",
+                                    notice=NOTICE, site_home="../index.html", policy_path=policy_file)
         twins = [s for s in specs if s["kind"] == "twin"]
         for spec in twins:
             pages_written += export_run(evals / spec["name"], out / "twins" / spec["name"],
@@ -127,7 +152,7 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
             (out / "evaluation" / "index.html").write_bytes(pages.simple_document(
                 "Aegis evaluation (synthetic cases)", pages.markdown(report), NOTICE, "../index.html"))
             (out / "index.html").write_bytes(pages.simple_document(
-                "Aegis: a demo on synthetic data", _front(specs, locked), NOTICE, "index.html"))
+                "Aegis: a demo on synthetic data", _front(specs, locked, blocked), NOTICE, "index.html"))
         for folder in (out, out / "evaluation"):
             shutil.copyfile(WEB_DIR / "style.css", folder / links.stylesheet())
         pages_written += 2
@@ -135,7 +160,7 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
     if problems:
         raise DemoError(f"{len(problems)} problems in the site, first: {problems[0]}")
     return {"pages": pages_written, "cases": len(specs), "twins": len(twins), "locked": locked,
-            "out": out}
+            "blocked": blocked, "out": out}
 
 
 def agent_recorded() -> bool:
@@ -163,8 +188,12 @@ def _copy_recordings(case: str, target: Path) -> None:
         shutil.copyfile(path, target / path.name)
 
 
-def _respond(run_dir: Path, policy_file: Path) -> dict:
-    """``approve`` and ``act`` on the sample's SSH attack, as the operator would, with a stand-in gate."""
+def _respond(run_dir: Path, policy_file: Path, pick, approvals: list) -> dict:
+    """``decide`` -> ``approve`` -> ``act`` on one incident, as the operator would, with a stand-in gate.
+
+    ``pick`` chooses the incident from the run folder; ``approvals`` is the (action, target) list to
+    approve and carry out. The gate records every request and connects to nothing.
+    """
     from aegis import cli
 
     gate = RecordingGate()
@@ -177,29 +206,32 @@ def _respond(run_dir: Path, policy_file: Path) -> dict:
                                                                          "demo-has-no-key", runner=gate))
         return code, said.getvalue()
 
-    incidents = read_incidents(run_dir / "incidents.jsonl")
-    ssh = next(i for i in incidents if "svc_backup" in i.accounts and i.host.agent_id == "002")
-    for args in (("decide", "--all"),
-                 ("approve", ssh.incident_id, "--action", "lock_account", "--target", "svc_backup",
-                  "--by", REVIEWER),
-                 ("act", ssh.incident_id)):
+    incident = pick(read_incidents(run_dir / "incidents.jsonl"))
+    steps = [("decide", "--all")]
+    for action, target in approvals:
+        steps.append(("approve", incident.incident_id, "--action", action, "--target", target, "--by", REVIEWER))
+    steps.append(("act", incident.incident_id))
+    for args in steps:
         code, said = command(*args)
         if code != 0:
             raise DemoError(f"'{args[0]}' failed in the demo: {said.strip()[-300:]}")
-    if not gate.requests or any(request.split()[-1] != "svc_backup" for request in gate.requests):
-        raise DemoError(f"the stand-in gate was sent {gate.requests}, expected requests for svc_backup only")
-    return {"incident": ssh.incident_id, "host": ssh.host.name, "requests": list(gate.requests)}
+    targets = {target for _, target in approvals}
+    if not gate.requests or any(request.split()[-1] not in targets for request in gate.requests):
+        raise DemoError(f"the stand-in gate was sent {gate.requests}, expected only {sorted(targets)}")
+    return {"incident": incident.incident_id, "host": incident.host.name, "requests": list(gate.requests),
+            "actions": [action for action, _ in approvals]}
 
 
 # --------------------------------------------------------------------------
 # The front page
 # --------------------------------------------------------------------------
 
-def _front(specs: list[dict], locked: dict) -> object:
+def _front(specs: list[dict], locked: dict, blocked: dict) -> object:
     links = pages.FileLinks()
     sample = next(s for s in specs if s["name"] == "sample")
     twins = [s for s in specs if s["kind"] == "twin"]
     attack = f"sample/{links.incident(locked['incident'])}"
+    block = f"response/{links.incident(blocked['incident'])}"
 
     def twin_item(spec: dict):
         kind = "an attack" if spec["labels"]["attack_events"] else "harmless"
@@ -218,14 +250,19 @@ def _front(specs: list[dict], locked: dict) -> object:
         tag("p", "Static copies of Aegis's read-only dashboard, made by python -m aegis demo from the synthetic "
                  "alerts in the repository. Nothing here comes from a real network. The model's answers were "
                  "recorded once and are replayed; the approval was given by \"", REVIEWER, "\" when the site "
-                 "was built, and the lab VM that carried out the lock is a stand-in that records the request "
-                 "and connects to nothing."),
+                 "was built, and the lab VM that carried out the lock and the firewall block is a stand-in that "
+                 "records the request and connects to nothing."),
         tag("h2", "Start here"),
         tag("ul",
             tag("li", tag("a", "The SSH attack, from alerts to the audit log", href=attack), ": password "
                 "guessing against svc_backup on ", locked["host"], ", a login, and /etc/shadow read with sudo. "
                 "Follow it stage by stage: the evidence, the model's account of it, the risk and the policy's "
                 "decision, the approval, and the lock."),
+            tag("li", tag("a", "An outside attacker, locked out and blocked", href=block), ": the same "
+                "guessing and login, but from a machine that is not the admin's. Aegis locks the account and "
+                "blocks the attacker's address at the lab firewall - a network block the sample's attack can "
+                "never get, because its source is the laptop Aegis runs on. Scored and decided by the rules; "
+                "both actions carried out after approval, with the gate's before/after proof."),
             tag("li", tag("a", "Every incident in the sample", href=f"sample/{links.home()}"), ": ",
                 sample["about"]),
             tag("li", tag("a", "The evaluation", href="evaluation/index.html"), ": how the rules and the "

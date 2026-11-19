@@ -152,7 +152,10 @@ python -m unittest
 * `demo` builds the public demo: the sample and its twins, evaluated with the
   recorded answers in `data\samples\recordings` (a prompt without one stops
   the build rather than asking a model), the SSH attack approved by "demo"
-  and locked on a stand-in gate, then exported with a notice on every page.
+  and locked on a stand-in gate, and a second scenario - an outside attacker
+  on a blockable address - where the account is locked and the address is
+  blocked at the firewall, both carried out with before/after proof. Exported
+  with a notice on every page.
 * `posture` ranks the laptop's weak spots - vulnerable programs and failed
   CIS checks - and writes fix steps into `runs\posture` (report.md,
   index.html, advice.json). Everything is worked out by code from Wazuh's
