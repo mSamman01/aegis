@@ -136,6 +136,12 @@ class Links:
     def event(self, event_id: str) -> str:
         return f"/event/{event_id}"
 
+    def posture(self, query: str = "") -> str:
+        return "/posture" + (f"?{query}" if query else "")
+
+    def posture_item(self, slug: str) -> str:
+        return f"/posture/{slug}"
+
     def stylesheet(self) -> str:
         return STYLESHEET
 
@@ -156,6 +162,12 @@ class FileLinks(Links):
 
     def event(self, event_id: str) -> str:
         return f"event-{event_id}.html"
+
+    def posture(self, query: str = "") -> str:
+        return "posture.html"  # a copy has one posture page: no filters
+
+    def posture_item(self, slug: str) -> str:
+        return f"posture-{slug}.html"
 
     def stylesheet(self) -> str:
         return "style.css"
@@ -307,7 +319,8 @@ def _top(header: dict) -> Markup:
         "header",
         tag("div", tag("a", "Aegis", href=header.get("site_home") or _links.home(), class_="brand"), " ",
             tag("span", "read-only", class_="badge badge-ro"), class_="brand-line"),
-        tag("nav", tag("a", "Incidents", href=_links.home()), " ", tag("a", "Audit log", href=_links.audit())),
+        tag("nav", tag("a", "Incidents", href=_links.home()), " ", tag("a", "Audit log", href=_links.audit()),
+            frag(" ", tag("a", "Posture", href=_links.posture())) if header.get("posture") else None),
         tag("div",
             "run folder ", tag("code", header["run_dir"]),
             " · policy ", tag("code", header["policy"]["id"] or "not read"),
@@ -917,6 +930,199 @@ def message_page(title: str, message: str, header: dict, link: tuple[str, str] |
             tag("p", message),
             tag("p", tag("a", link[1], href=link[0])) if link else None]
     return document(f"Aegis - {title}", header, body)
+
+
+# --------------------------------------------------------------------------
+# Posture: the PC's weak spots, ranked, with fix steps worked out by code (D47, D48)
+# --------------------------------------------------------------------------
+
+_STEP_TEXT = {"run": "Run, in a terminal opened as administrator", "check": "Then check that it took", "do": "Do"}
+_ACTION_CLASS = {"update": "outcome-needs_approval", "command": "outcome-allow", "held back": "outcome-deny",
+                 "CIS text only": ""}
+
+
+def _times_word(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _priority(score: int) -> Markup:
+    return tag("meter", min="0", max="100", low="25", high="60", optimum="0", value=str(score),
+               title=f"priority {score} of 100")
+
+
+def _what_to_do(action: str) -> Markup:
+    return tag("span", action, class_=f"chip {_ACTION_CLASS.get(action, '')}".strip())
+
+
+def _posture_query(area: str | None, show: str | None) -> str:
+    return "&".join(part for part in (f"show={show}" if show else "", f"area={area}" if area else "") if part)
+
+
+def _posture_filters(data: dict) -> Markup:
+    from aegis.posture import SHOW
+
+    area, show = data["filters"]["area"], data["filters"]["show"]
+
+    def link(label: str, query: str, on: bool) -> Markup:
+        return tag("a", label, href=_links.posture(query), class_="on" if on else None)
+
+    show_links = [link("everything", _posture_query(area, None), show is None)]
+    show_links += [link(label, _posture_query(area, name), show == name) for name, label in SHOW.items()]
+    area_links = [link("all", _posture_query(None, show), area is None)]
+    area_links += [link(f"{a['area']} ({a['items']})", _posture_query(a["slug"], show), area == a["slug"])
+                   for a in data["areas"]]
+    return tag("div", tag("div", tag("span", "Show", class_="filter-name"), [frag(" ", a) for a in show_links]),
+               tag("div", tag("span", "Area", class_="filter-name"), [frag(" ", a) for a in area_links]),
+               class_="filters")
+
+
+def posture_page(data: dict) -> bytes:
+    header = data["header"]
+    body = [tag("h1", "Posture"),
+            tag("p", "This PC's weak spots from Wazuh - vulnerable programs and failed CIS checks - ranked by fixed "
+                     "rules, each with fix steps. ", _badge("code"), " No AI model wrote any of it. Advice only: "
+                     "Aegis never changes this PC, the policy denies every action on it (D7).", class_="lead")]
+    if not data["ready"]:
+        if data["error"]:
+            body.append(tag("section", tag("h2", "The newest export could not be read"), tag("p", data["error"]),
+                            class_="problems"))
+        else:
+            body.append(tag("p", "There is no posture export in ", tag("code", data["folder"]), " yet. Make one on "
+                                 "the manager with lab/aegis-posture and copy it into that folder (README, "
+                                 "\"Posture advice\"); this page picks it up without a restart.", class_="empty"))
+        return document("Aegis - posture", header, body)
+    counts, policy = data["counts"], data["policy"]
+    age = data["age_days"]
+    when = (f"{age:.0f} days ago" if age is not None and age >= 2 else
+            "today" if age is not None and age < 1 else "yesterday" if age is not None else "at an unknown time")
+    if _links.static:  # a copy is read later: an age worked out now would go wrong
+        freshness = tag("span", f"exported {data['made_at']}")
+    elif data["stale"]:
+        freshness = tag("span", f"exported {when} ({data['made_at']}) - older than {data['stale_days']} days, so "
+                                "export again for the current state", class_="bad")
+    else:
+        freshness = tag("span", f"exported {when} ({data['made_at']})")
+    body.append(tag("p", tag("strong", data["agent"]["name"] or "agent " + data["agent"]["id"]),
+                    f" (agent {data['agent']['id']}), {data['os'] or 'unknown system'} · ", freshness,
+                    " · file ", tag("code", data["file"]), class_="facts"))
+    body.append(tag("p", f"{policy.get('name') or 'No CIS policy'}: score {policy.get('score', '?')}% - "
+                         f"{_times_word(counts['passed'], 'check')} passed, {counts['failed']} failed, "
+                         f"{counts['not_applicable']} not applicable.", class_="muted"))
+    body.append(tag(
+        "div",
+        _tile("Failed CIS checks", counts["failed"], f"{counts['passed']} passed"),
+        _tile("With a checked command", counts["with_command"], "one reg add each, tested against the check"),
+        _tile("Commands held back", counts["held"], "could lock you out or break everyday use", "tile band-medium"),
+        _tile("Vulnerable programs", counts["programs"], f"{counts['cves']} active CVEs", "tile band-high"),
+        _tile("Removed by the checker", counts["removed"], "steps that would weaken the PC"),
+        _tile("Not on Windows 11 Home", counts["not_on_home"], "listed, with a note"),
+        class_="tiles"))
+    if not _links.static:
+        body.append(_posture_filters(data))
+    rows = []
+    for row in data["items"]:
+        rows.append(tag(
+            "tr",
+            tag("td", row["rank"], class_="num"),
+            tag("td", _priority(row["score"]), " ", tag("strong", row["score"]), class_="nowrap"),
+            tag("td", tag("a", row["title"], href=_links.posture_item(row["slug"])),
+                tag("br"), tag("small", row["detail"], class_="muted") if row["detail"] else None),
+            tag("td", row["area"], tag("br", ) if row["not_on_home"] else None,
+                tag("small", "not on Home", class_="muted") if row["not_on_home"] else None),
+            tag("td", _what_to_do(row["action"])),
+        ))
+    if rows:
+        shown = (f"{counts['shown']} items" if counts["shown"] == counts["items"]
+                 else f"{counts['shown']} of {counts['items']} items")
+        body.append(tag("p", shown + ", most important first", class_="muted"))
+        body.append(tag("table", tag("thead", tag("tr", [tag("th", h) for h in (
+            "#", "Priority", "Item", "Area", "What to do")])), tag("tbody", rows), class_="posture"))
+    else:
+        body.append(tag("p", "Nothing matches these filters.", class_="empty"))
+    if data["problems"]:
+        body.append(tag("section", tag("h2", "What Aegis could not read"),
+                        tag("ul", [tag("li", p) for p in data["problems"]]), class_="problems"))
+    return document("Aegis - posture", header, body)
+
+
+def posture_item_page(data: dict) -> bytes:
+    header = data["header"]
+    program, check = data["program"], data["check"]
+    body = [tag("p", tag("a", "← all posture advice", href=_links.posture()), class_="back"),
+            tag("h1", data["title"]),
+            tag("p", f"Number {data['rank']} of {data['of']} · priority ", _priority(data["score"]), " ",
+                tag("strong", data["score"]), f" · {data['area']} · ", _what_to_do(data["action"]), " ",
+                _badge("code"), class_="facts")]
+    if program:
+        body.append(_dl([("Installed", tag("code", program["version"])),
+                         ("Package type", program["type"] or None),
+                         ("Fixed by", program["fix"])]))
+    body.append(tag("h2", "Why it is here"))
+    body.append(tag("ul", [tag("li", tag("strong", f"{'+' if r['points'] >= 0 else ''}{r['points']}"), " ",
+                                r["why"]) for r in data["reasons"]], class_="plain"))
+    if data["detail"]:
+        body += [tag("h2", "What is wrong"), tag("p", data["detail"])]
+    for note in data["notes"]:
+        body.append(tag("p", note, class_="warning"))
+    body.append(tag("h2", "What to do"))
+    steps = []
+    for step in data["steps"]:
+        source = step["source"] != "Aegis"
+        label = frag(tag("strong", _STEP_TEXT.get(step["kind"], step["kind"])),
+                     frag(" ", tag("span", f"text from {step['source']}", class_="badge badge-evidence"))
+                     if source else None)
+        if step["kind"] in ("run", "check"):
+            steps.append(tag("li", label, tag("pre", tag("code", step["text"]), class_="command")))
+        else:
+            steps.append(tag("li", label, tag("p", step["text"], class_="untrusted") if source else
+                             tag("p", _inline(step["text"]))))
+    body.append(tag("ol", steps) if steps else tag("p", "No steps.", class_="empty"))
+    if data["held"]:
+        body.append(tag("h2", "Command held back"))
+        body.append(tag("p", "CIS recommends this, but Aegis gives no command for it: ",
+                         "; ".join(h["why"] for h in data["held"]), ". Change it only if that is fine for you; "
+                         "CIS's text above says how."))
+    if data["removed"]:
+        body.append(tag("h2", "Removed by the checker"))
+        body.append(tag("p", "These steps came with the data but would weaken the PC, so they are not advice. "
+                             "Do not run them."))
+        body.append(tag("ul", [tag("li", r["why"], tag("details", tag("summary", "show the removed text"),
+                                                      tag("pre", r["text"], class_="untrusted")))
+                               for r in data["removed"]]))
+    if check:
+        body.append(tag("h2", "What Wazuh checks"))
+        if check["targets"]:
+            body.append(tag("table", tag("thead", tag("tr", [tag("th", h) for h in ("Registry key", "Value",
+                                                                                   "Must be")])),
+                            tag("tbody", [tag("tr", tag("td", tag("code", t["key"])), tag("td", tag("code", t["value"])),
+                                              tag("td", tag("code", t["wanted"]))) for t in check["targets"]]),
+                            class_="compact"))
+        else:
+            body.append(tag("p", "Its rules are not one plain registry value, so Aegis made no command: ",
+                             check["why_no_target"] or "see CIS's text above", "."))
+        body.append(_dl([("CIS section", check["cis"] or None), ("Check", f"{check['policy']} {check['id']}"),
+                         ("Rationale", tag("span", check["rationale"], class_="untrusted") if check["rationale"]
+                          else None)]))
+    if program:
+        body.append(tag("h2", f"CVEs ({len(program['cves'])})"))
+        body.append(tag("table", tag("thead", tag("tr", [tag("th", h) for h in (
+            "CVE", "Severity", "CVSS", "Wazuh's bound", "Over the network, no sign-in", "With the advised version")])),
+            tag("tbody", [tag("tr", tag("td", tag("code", c["id"])), tag("td", c["severity"]),
+                              tag("td", "under evaluation" if c["under_evaluation"] else
+                                  c["score"] if c["score"] is not None else "-", class_="num"),
+                              tag("td", c["condition"] or "-"),
+                              tag("td", ("yes" + (", no click" if c["no_interaction"] else "")
+                                         if c["network"] and c["no_privileges"] else "no") if c["vector_known"]
+                                  else tag("span", "unknown", class_="muted")),
+                              tag("td", c["status"], class_="ok" if c["status"].startswith("fixed") else
+                                  "bad" if c["status"].startswith("NOT") else "muted"))
+                          for c in program["cves"]]), class_="compact"))
+    if data["links"]:
+        body.append(tag("h2", "References"))
+        body.append(tag("p", "Shown as text, not links: copy one into your browser. Only addresses on known sites "
+                             "(CIS, Microsoft, NVD, CVE, Wazuh ...) are kept.", class_="muted"))
+        body.append(tag("ul", [tag("li", tag("code", link)) for link in data["links"]], class_="plain"))
+    return document(f"Aegis - posture - {data['title'][:60]}", header, body)
 
 
 # --------------------------------------------------------------------------

@@ -460,9 +460,9 @@ def posture_results(posture_dir: Path | None = POSTURE_DIR) -> list:
     from aegis import posture as posturing
 
     sources = [("synthetic sample", PROJECT / "data" / "samples" / "posture_sample.json")]
-    real = sorted(Path(posture_dir).glob("*.json"), key=lambda path: path.stat().st_mtime) if posture_dir else []
-    if real:
-        sources.append(("real export", real[-1]))
+    newest = posturing.newest_export(posture_dir)
+    if newest is not None:
+        sources.append(("real export", newest))
     found = []
     for name, path in sources:
         try:

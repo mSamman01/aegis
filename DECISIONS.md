@@ -1050,3 +1050,33 @@ left to do.
   checker to remove. On the sample it removes the planted text.
 
 Not done yet: a scheduled refresh (the export is run by hand).
+
+## D48 - Posture on the dashboard (2026-11-19)
+The posture advice (D47) was a report in its own folder, apart from the
+dashboard where everything else is looked at. It is now part of the
+dashboard: `serve` has a Posture page next to Incidents and Audit log.
+
+* Same rules as the rest of the dashboard (D35, D36): it reads the newest
+  export in data/posture, ranks it with the same code as `aegis posture`, and
+  renders. Nothing writes; a test fingerprints the run folder and the posture
+  folder before and after opening every page. The export is read again only
+  when the newest file changes, so a new export shows without a restart.
+* The page ranks every item, not only the top ten: 354 on the laptop, with
+  filters by area and by kind (programs, with a command, held back, CIS text
+  only, not on Windows 11 Home). Each item has its own page: why it is
+  there, point by point; the steps; the registry value Wazuh checks, or each
+  CVE with Wazuh's bound and whether the advised version fixes it.
+* A program's name comes from the PC and can hold anything, so it never goes
+  into a link: items are addressed as check-<id> or program-<12 hex digits of
+  a hash>. Text from the export is escaped like any evidence; references are
+  shown as text, never as links (pages link only to fixed addresses).
+* A held-back command is not shown anywhere, the API included: holding it
+  back means Aegis gives no command. What the checker removed is shown, as
+  removed, behind a click, so the reader can see what the data tried.
+* An export older than 7 days is flagged on the page: the advice is only as
+  current as the export (still made by hand, D47). A static copy shows the
+  export's date instead of an age that would go wrong.
+* `export --posture-dir` adds the posture pages to a static copy. The demo's
+  sample now has them, from the synthetic export; the report version stays
+  beside it.
+

@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     srv.add_argument("--dir", type=Path, default=RUN_DIR, help=DIR_HELP)
     srv.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
     srv.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+    srv.add_argument("--posture-dir", type=Path, default=None,
+                     help="folder of posture exports; the newest is shown on /posture (default: data/posture)")
 
     wat = commands.add_parser("watch", help="pull new alerts from the Wazuh manager as they happen (read-only feed)")
     wat.add_argument("--dir", type=Path, default=RUN_DIR / "live",
@@ -217,6 +219,8 @@ def main(argv: list[str] | None = None, *, executor_factory=None) -> int:
     exp.add_argument("--out", type=Path, required=True, help="folder for the pages (created if missing)")
     exp.add_argument("--label", default=None, help="what the pages call the run folder (default: its name)")
     exp.add_argument("--policy", type=Path, default=None, help="policy file (default: policy/policy.json)")
+    exp.add_argument("--posture-dir", type=Path, default=None,
+                     help="also copy the posture pages for the newest export in this folder (default: none)")
 
     pos = commands.add_parser("posture", help="rank this PC's weak spots and write fix steps (advice only)")
     pos.add_argument("--from", dest="source", type=Path, default=None,
@@ -749,6 +753,7 @@ def _watch(args: argparse.Namespace) -> int:
 
 
 def _serve(args: argparse.Namespace) -> int:
+    from aegis import posture as posturing
     from aegis import server  # only this command needs the web server
 
     if not args.dir.is_dir():
@@ -758,7 +763,8 @@ def _serve(args: argparse.Namespace) -> int:
         print("error: --port must be between 1 and 65535", file=sys.stderr)
         return 2
     try:
-        httpd = server.make_server(args.dir, args.port, args.policy)
+        httpd = server.make_server(args.dir, args.port, args.policy,
+                                   posture_dir=args.posture_dir or posturing.POSTURE_DIR)
     except OSError as exc:
         print(f"error: cannot listen on 127.0.0.1:{args.port} ({exc}). Is a dashboard already running? "
               f"Try --port {args.port + 1}.", file=sys.stderr)
@@ -774,6 +780,7 @@ def _serve(args: argparse.Namespace) -> int:
         "as act does",
         f"Audit log {state.entries} entries, " + ("chain intact" if state.ok else f"BROKEN: {state.problem}"),
     ]
+    lines.append(_posture_line(httpd.posture.current()))
     lines += [f"Note      {problem}" for problem in snap.problems]
     lines.append("Approving and acting stay on the command line. Press Ctrl+C to stop.")
     print("\n".join(_ascii(line) for line in lines), flush=True)
@@ -784,6 +791,16 @@ def _serve(args: argparse.Namespace) -> int:
     finally:
         httpd.server_close()
     return 0
+
+
+def _posture_line(loaded) -> str:
+    if loaded.error:
+        return f"Posture   the newest export could not be read: {loaded.error}"
+    if loaded.posture is None:
+        return f"Posture   no export in {loaded.folder} yet (/posture says how to make one)"
+    state = loaded.posture
+    return (f"Posture   {loaded.path.name}: {state.agent_name}, exported {state.made_at}, {len(loaded.pairs)} items "
+            f"on /posture")
 
 
 def _fresh_decision(args: argparse.Namespace):
@@ -858,8 +875,18 @@ def _export(args: argparse.Namespace) -> int:
     if not (args.dir / INCIDENTS_NAME).exists():
         print(f"error: no {INCIDENTS_NAME} in {args.dir}; run 'python -m aegis correlate' first", file=sys.stderr)
         return 2
+    posture = None
+    if args.posture_dir is not None:
+        from aegis import posture as posturing
+
+        posture = posturing.PostureView(args.posture_dir).current()
+        if posture.posture is None:
+            print(_ascii(f"error: no usable posture export in {args.posture_dir}"
+                         + (f": {posture.error}" if posture.error else "")), file=sys.stderr)
+            return 2
     try:
-        written = export_run(args.dir, args.out, label=args.label or args.dir.name, policy_path=args.policy)
+        written = export_run(args.dir, args.out, label=args.label or args.dir.name, policy_path=args.policy,
+                             posture=posture)
     except (OSError, ContractError, ValueError) as exc:
         print(_ascii(f"error: cannot export: {exc}"), file=sys.stderr)
         return 2
@@ -884,12 +911,11 @@ def _posture(args: argparse.Namespace) -> int:
         return 2
     source = args.source
     if source is None:
-        found = sorted(Path("data/posture").glob("*.json"), key=lambda path: path.stat().st_mtime)
-        if not found:
+        source = posturing.newest_export(posturing.POSTURE_DIR)
+        if source is None:
             print("error: no export in data/posture; make one on the manager with lab/aegis-posture "
                   "(see README), or give --from", file=sys.stderr)
             return 2
-        source = found[-1]
     try:
         state = posturing.load(source)
         advice = posturing.rank(state)

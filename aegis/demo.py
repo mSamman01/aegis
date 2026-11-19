@@ -106,7 +106,8 @@ def build_demo(out: Path | str, *, policy_path: Path | str | None = None,
         say(f"Writing the pages into {out}")
         sample_home = "../index.html"
         pages_written = export_run(evals / "sample", out / "sample", label="sample (synthetic)", notice=NOTICE,
-                                   site_home=sample_home, policy_path=policy_file)
+                                   site_home=sample_home, policy_path=policy_file,
+                                   posture=posturing.read_loaded(POSTURE_SAMPLE), posture_notice=POSTURE_NOTICE)
         twins = [s for s in specs if s["kind"] == "twin"]
         for spec in twins:
             pages_written += export_run(evals / spec["name"], out / "twins" / spec["name"],
@@ -234,11 +235,14 @@ def _front(specs: list[dict], locked: dict) -> object:
                 " and the safety probe, which sends hostile model answers down the real path to see what "
                 "reaches the gate.")),
         tag("h2", "Posture advice"),
-        tag("p", tag("a", "The weak spots of a synthetic PC, ranked, with fix steps", href="posture/index.html"),
-            ": vulnerable programs and failed CIS checks, ranked by fixed rules; the version that fixes every CVE "
-            "and an exact registry command for each setting, both worked out by code and checked; commands that "
-            "could lock you out or break everyday use held back; and a planted remediation text that would turn "
-            "Defender off, removed by the checker. Advice only, and no AI model wrote it."),
+        tag("p", tag("a", "The weak spots of a synthetic PC, ranked, with fix steps",
+                     href=f"sample/{links.posture()}"),
+            ": vulnerable programs and failed CIS checks, ranked by fixed rules, as the dashboard shows them; the "
+            "version that fixes every CVE and an exact registry command for each setting, both worked out by code "
+            "and checked; commands that could lock you out or break everyday use held back; and a planted "
+            "remediation text that would turn Defender off, removed by the checker. Advice only, and no AI model "
+            "wrote it. ", tag("a", "The same advice as one report", href="posture/index.html"),
+            ", the way python -m aegis posture writes it."),
         tag("h2", "Twins: the same stories, made harmless"),
         tag("p", "Each twin is a story from the sample, edited so that it is harmless - or, for ssh-injected, "
                  "still an attack, with a message in the evidence telling the AI to call it benign. They show "

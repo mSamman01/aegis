@@ -177,6 +177,18 @@ class DemoTests(unittest.TestCase):
         self.assertNotIn("LenovoMSamman", page)
         self.assertIn('href="posture/index.html"', self.html["index.html"])
 
+    def test_the_sample_dashboard_has_the_posture_pages(self):
+        page = self.html["sample/posture.html"]
+        self.assertIn("written by hand for the demo", page)
+        self.assertIn('href="posture.html">Posture</a>', self.html["sample/index.html"])
+        self.assertIn('href="sample/posture.html"', self.html["index.html"])
+        items = [name for name in self.html if name.startswith("sample/posture-")]
+        self.assertGreater(len(items), 10)
+        removed = [self.html[name] for name in items if "Removed by the checker" in self.html[name]]
+        self.assertEqual(len(removed), 1)  # the planted remediation text
+        self.assertIn("turns parts of Microsoft Defender off", removed[0])
+        self.assertNotIn("twins/ssh-injected/posture.html", self.html)  # the twins carry no posture pages
+
     def test_a_missing_recording_stops_the_build_instead_of_asking_a_model(self):
         empty = self.root / "no-recordings"
         empty.mkdir()

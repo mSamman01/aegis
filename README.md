@@ -115,7 +115,12 @@ python -m unittest
   this computer only, answers GET only, writes nothing, runs no JavaScript,
   and has no approve or act button: those stay on the command line. The same
   data is at `/api/overview`, `/api/incident/<id>`, `/api/event/<id>` and
-  `/api/audit` as JSON. `--port` picks another port.
+  `/api/audit` as JSON. `--port` picks another port. Its Posture page shows
+  the newest export in `data\posture` (`--posture-dir` for another folder):
+  every weak spot ranked, filters by area and kind, and one page per item
+  with its fix steps, the setting Wazuh checks or the program's CVEs, and
+  what the checker removed. A newer export shows without a restart; one older
+  than 7 days is flagged. Also at `/api/posture` and `/api/posture/<id>`.
 * `watch` pulls new alerts from the Wazuh manager as they happen, into
   `runs\live`, and works out the incidents again after every batch. Run
   `serve --dir runs\live` beside it to watch them on the dashboard. It needs
@@ -139,7 +144,8 @@ python -m unittest
   relative links, to open from disk or put on any static host. Every page
   carries the same Content-Security-Policy as a meta tag. The copy holds every
   alert in the folder, so keep it under `runs\` (which git ignores) and
-  publish it only if that data may be public.
+  publish it only if that data may be public. `--posture-dir data\posture`
+  adds the posture pages.
 * `demo` builds the public demo: the sample and its twins, evaluated with the
   recorded answers in `data\samples\recordings` (a prompt without one stops
   the build rather than asking a model), the SSH attack approved by "demo"

@@ -18,8 +18,11 @@ aegis.web.pages escapes every piece of text. The Host header must name
 through the browser by pointing its own domain name at 127.0.0.1 (DNS
 rebinding).
 
-Pages:  /   /incident/<id>   /event/<id>   /audit
-API:    /api/overview   /api/incident/<id>   /api/event/<id>   /api/audit
+The posture pages (D48) read the newest export in the posture folder
+(data/posture by default) the same way: read, rank, render, never write.
+
+Pages:  /   /incident/<id>   /event/<id>   /audit   /posture   /posture/<item>
+API:    /api/overview   /api/incident/<id>   /api/event/<id>   /api/audit   /api/posture   /api/posture/<item>
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from aegis import posture as posturing
 from aegis import snapshot
 from aegis.contracts.decision import BANDS
 from aegis.web import pages
@@ -64,7 +68,8 @@ class BadRequest(ValueError):
     pass
 
 
-def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
+def route(view: snapshot.RunView, target: str,
+          posture: posturing.PostureView | None = None) -> tuple[int, str, bytes]:
     """Answer one GET: ``(status, content type, body)``. Reads only."""
     parts = urlsplit(target)
     path = parts.path
@@ -79,6 +84,17 @@ def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
     snap = view.current()
     head = snapshot.header(snap)
     api = path.startswith("/api/")
+    if posture is not None:
+        head["posture"] = True  # the Posture link in every page's header
+
+    def page(data: dict) -> dict:
+        if posture is not None:
+            data["header"] = dict(data["header"], posture=True)
+        return data
+
+    if posture is not None and (path in ("/posture", "/api/posture") or path.startswith(("/posture/",
+                                                                                         "/api/posture/"))):
+        return _posture(posture, path, query, head, api)
     if path in ("/", "/api/overview"):
         min_band = _one(query, "min", lambda v: v in BANDS)
         host = _one(query, "host", lambda v: re.fullmatch(r"[A-Za-z0-9_\-]{1,32}", v) is not None)
@@ -86,7 +102,7 @@ def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
         if api:
             return 200, JSON, json_body(data)
         refresh = _one(query, "refresh", lambda v: v in {str(s) for s in REFRESH_CHOICES})
-        return 200, HTML, pages.overview_page(data, int(refresh) if refresh else None)
+        return 200, HTML, pages.overview_page(page(data), int(refresh) if refresh else None)
 
     match = re.fullmatch(r"/(api/)?incident/([A-Za-z0-9\-]{1,40})", path)
     if match:
@@ -103,7 +119,7 @@ def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
                                                      (f"/incident/{successor}", f"Open {successor}"))
             return _not_found(api, head, "No incident has this id, or more than one starts with it.")
         data = snapshot.incident_view(snap, incident)
-        return (200, JSON, json_body(data)) if api else (200, HTML, pages.incident_page(data))
+        return (200, JSON, json_body(data)) if api else (200, HTML, pages.incident_page(page(data)))
 
     match = re.fullmatch(r"/(api/)?event/(evt-[0-9a-f]{16})", path)
     if match:
@@ -111,14 +127,31 @@ def route(view: snapshot.RunView, target: str) -> tuple[int, str, bytes]:
         if event is None:
             return _not_found(api, head, "No event with this id is in the events file.")
         data = snapshot.event_view(snap, event)
-        return (200, JSON, json_body(data)) if api else (200, HTML, pages.event_page(data))
+        return (200, JSON, json_body(data)) if api else (200, HTML, pages.event_page(page(data)))
 
     if path in ("/audit", "/api/audit"):
         show_all = api or query.get("all") == ["1"]
         data = snapshot.audit_view(snap, None if show_all else AUDIT_PAGE_ROWS)
-        return (200, JSON, json_body(data)) if api else (200, HTML, pages.audit_page(data, show_all))
+        return (200, JSON, json_body(data)) if api else (200, HTML, pages.audit_page(page(data), show_all))
 
     return _not_found(api, head, "There is no page here.")
+
+
+def _posture(posture: posturing.PostureView, path: str, query: dict, head: dict,
+             api: bool) -> tuple[int, str, bytes]:
+    loaded = posture.current()
+    if path in ("/posture", "/api/posture"):
+        area = _one(query, "area", lambda v: re.fullmatch(r"[a-z0-9\-]{1,60}", v) is not None)
+        show = _one(query, "show", lambda v: v in posturing.SHOW)
+        data = posturing.overview_data(loaded, area, show)
+        return (200, JSON, json_body(data)) if api else (200, HTML, pages.posture_page(dict(data, header=head)))
+    slug = path.split("/")[-1]
+    data = posturing.item_data(loaded, slug) if path.count("/") == (3 if api else 2) and posturing.valid_slug(slug) \
+        else None
+    if data is None:
+        return _not_found(api, head, "No posture item has this id in the newest export. The export may have "
+                                     "changed since this link was made.")
+    return (200, JSON, json_body(data)) if api else (200, HTML, pages.posture_item_page(dict(data, header=head)))
 
 
 def _one(query: dict, name: str, valid) -> str | None:
@@ -155,7 +188,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                   "refused.\n".encode("ascii"))
             return
         try:
-            status, content_type, body = route(self.server.view, self.path)
+            status, content_type, body = route(self.server.view, self.path, self.server.posture)
         except BadRequest as exc:
             status, content_type, body = 400, TEXT, f"bad request: {exc}\n".encode("ascii", "replace")
         except Exception as exc:  # never show a traceback to the browser; the console gets it
@@ -201,8 +234,10 @@ class DashboardServer(ThreadingHTTPServer):
     # take over the dashboard's traffic; elsewhere it only allows a quick restart.
     allow_reuse_address = os.name != "nt"
 
-    def __init__(self, view: snapshot.RunView, port: int, quiet: bool = False):
+    def __init__(self, view: snapshot.RunView, port: int, quiet: bool = False,
+                 posture: posturing.PostureView | None = None):
         self.view = view
+        self.posture = posture
         self.quiet = quiet
         super().__init__((LOOPBACK, port), DashboardHandler)
 
@@ -218,6 +253,10 @@ class DashboardServer(ThreadingHTTPServer):
 
 
 def make_server(run_dir: Path | str, port: int = DEFAULT_PORT, policy_path: Path | str | None = None,
-                quiet: bool = False) -> DashboardServer:
-    """A dashboard on 127.0.0.1:<port> for one run folder (port 0 picks a free one)."""
-    return DashboardServer(snapshot.RunView(run_dir, policy_path), port, quiet)
+                quiet: bool = False, posture_dir: Path | str | None = None) -> DashboardServer:
+    """A dashboard on 127.0.0.1:<port> for one run folder (port 0 picks a free one).
+
+    With ``posture_dir``, the posture pages show the newest export in it (D48); without, there are none.
+    """
+    return DashboardServer(snapshot.RunView(run_dir, policy_path), port, quiet,
+                           posturing.PostureView(posture_dir) if posture_dir is not None else None)

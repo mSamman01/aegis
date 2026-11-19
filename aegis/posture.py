@@ -24,14 +24,19 @@ hide survives.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 EXPORT_FORMAT = 1
 TOP = 10
+POSTURE_DIR = Path(__file__).resolve().parent.parent / "data" / "posture"  # real exports (git-ignored, D8)
+STALE_DAYS = 7  # the dashboard flags an export older than this
 
 # --------------------------------------------------------------------------
 # Data, as read from the export
@@ -809,8 +814,13 @@ def _finish(advice: Advice) -> Advice:
 
 
 def rank(posture: Posture) -> list[Advice]:
-    advice = [program_advice(p) for p in posture.programs] + [check_advice(c) for c in posture.checks]
-    return sorted(advice, key=lambda a: (-a.score, a.kind != "program", a.item))
+    return [advice for advice, _ in ranked(posture)]
+
+
+def ranked(posture: Posture) -> list[tuple[Advice, Program | Check]]:
+    """The advice, most important first, each with the program or check it is about."""
+    pairs = [(program_advice(p), p) for p in posture.programs] + [(check_advice(c), c) for c in posture.checks]
+    return sorted(pairs, key=lambda pair: (-pair[0].score, pair[0].kind != "program", pair[0].item))
 
 
 # --------------------------------------------------------------------------
@@ -1006,3 +1016,219 @@ def verify(posture: Posture, advice: Sequence[Advice]) -> dict:
                     and not result["commands_failing"] and not result["shown_rejected"]
                     and result["shareable_clean"])
     return result
+
+
+# --------------------------------------------------------------------------
+# For the dashboard (aegis serve): the newest export, ranked again when it changes
+# --------------------------------------------------------------------------
+
+def newest_export(folder: Path | str | None) -> Path | None:
+    """The newest export in ``folder`` by modification time; None without a folder or an export."""
+    if folder is None:
+        return None
+    found = []
+    try:
+        for path in Path(folder).glob("*.json"):
+            try:
+                if path.is_file():
+                    found.append((path.stat().st_mtime_ns, path.name, path))
+            except OSError:
+                continue
+    except OSError:
+        return None
+    return max(found)[2] if found else None
+
+
+_SLUG = re.compile(r"^(check-\d{1,12}|program-[0-9a-f]{12})(-\d{1,4})?$")
+
+
+def advice_slugs(advice: Sequence[Advice]) -> list[str]:
+    """A short id per item for links: check-<id>, or program-<12 hex digits of its name and version>.
+
+    A program's name comes from the PC and can hold anything, so it never goes into a link itself.
+    Repeats (two policies with the same check id) get -2, -3 ...
+    """
+    seen: dict[str, int] = {}
+    out = []
+    for item in advice:
+        if item.kind == "check" and re.fullmatch(r"check \d{1,12}", item.item):
+            base = "check-" + item.item.split()[1]
+        else:
+            base = "program-" + hashlib.sha256(item.item.encode("utf-8")).hexdigest()[:12]
+        seen[base] = seen.get(base, 0) + 1
+        out.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
+    return out
+
+
+def valid_slug(text: str) -> bool:
+    return bool(_SLUG.match(text))
+
+
+def area_slug(area: str) -> str:
+    """Areas are names fixed in this module, never taken from the data."""
+    return re.sub(r"[^a-z0-9]+", "-", area.lower()).strip("-") or "other"
+
+
+@dataclass(frozen=True)
+class Loaded:
+    """What the dashboard shows. ``posture`` is None when there is no usable export."""
+
+    folder: Path
+    path: Path | None = None
+    posture: Posture | None = None
+    pairs: tuple = ()  # (Advice, Program | Check), most important first
+    slugs: tuple = ()
+    error: str = ""
+
+
+class PostureView:
+    """The newest export in a folder, ranked, and ranked again only when the newest file changes.
+
+    It reads and never writes: the dashboard stays read-only (D35).
+    """
+
+    def __init__(self, folder: Path | str):
+        self.folder = Path(folder)
+        self._lock = threading.Lock()
+        self._key: tuple | None = None
+        self._loaded = Loaded(self.folder)
+
+    def current(self) -> Loaded:
+        path = newest_export(self.folder)
+        key = None
+        if path is not None:
+            try:
+                stat = path.stat()
+                key = (str(path), stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                path = None
+        with self._lock:
+            if key != self._key:
+                self._loaded = self._read(path)
+                self._key = key
+            return self._loaded
+
+    def _read(self, path: Path | None) -> Loaded:
+        return read_loaded(path, self.folder) if path is not None else Loaded(self.folder)
+
+
+def read_loaded(path: Path | str, folder: Path | str | None = None) -> Loaded:
+    """One export, ranked, for the dashboard or a static copy. A damaged file gives an error, not an exception."""
+    path = Path(path)
+    folder = Path(folder) if folder is not None else path.parent
+    try:
+        posture = load(path)
+        pairs = tuple(ranked(posture))
+    except PostureError as exc:
+        return Loaded(folder, path, error=str(exc))
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:  # a damaged export
+        return Loaded(folder, path, error=f"{path.name}: could not be read ({type(exc).__name__}: {exc})")
+    return Loaded(folder, path, posture, pairs, tuple(advice_slugs([advice for advice, _ in pairs])))
+
+
+def export_age_days(made_at: str, now: datetime | None = None) -> float | None:
+    try:
+        when = datetime.fromisoformat(str(made_at).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, ((now or datetime.now(timezone.utc)) - when).total_seconds() / 86400)
+
+
+# Filters on the dashboard's posture page: name -> label
+SHOW = {"programs": "vulnerable programs", "commands": "with a command", "held": "command held back",
+        "text": "CIS text only", "home": "not on Windows 11 Home"}
+
+
+def _action(advice: Advice) -> str:
+    if advice.kind == "program":
+        return "update"
+    if any(step.kind == "run" for step in advice.steps):
+        return "command"
+    return "held back" if advice.held else "CIS text only"
+
+
+def _not_on_home(advice: Advice) -> bool:
+    return any(note.startswith("Windows 11 Home has no") for note in advice.notes)
+
+
+def _shows(row: dict, show: str | None) -> bool:
+    return {None: True, "programs": row["kind"] == "program", "commands": row["action"] == "command",
+            "held": row["action"] == "held back", "text": row["action"] == "CIS text only",
+            "home": row["not_on_home"]}[show]
+
+
+def overview_data(loaded: Loaded, area: str | None = None, show: str | None = None,
+                  now: datetime | None = None) -> dict:
+    """The posture page's data (also /api/posture): every item ranked, filtered by area or kind."""
+    data = {"folder": str(loaded.folder), "file": loaded.path.name if loaded.path else None,
+            "error": loaded.error, "ready": loaded.posture is not None}
+    posture = loaded.posture
+    if posture is None:
+        return data
+    rows = []
+    for number, ((advice, _), slug) in enumerate(zip(loaded.pairs, loaded.slugs), 1):
+        rows.append({"rank": number, "slug": slug, "kind": advice.kind, "title": advice.title, "area": advice.area,
+                     "area_slug": area_slug(advice.area), "score": advice.score, "action": _action(advice),
+                     "not_on_home": _not_on_home(advice), "detail": advice.detail})
+    areas: dict[str, dict] = {}
+    for row in rows:
+        entry = areas.setdefault(row["area_slug"], {"area": row["area"], "slug": row["area_slug"], "items": 0,
+                                                     "highest": 0})
+        entry["items"] += 1
+        entry["highest"] = max(entry["highest"], row["score"])
+    area = area if area in areas else None
+    show = show if show in SHOW else None
+    shown = [row for row in rows if (area is None or row["area_slug"] == area) and _shows(row, show)]
+    advice = [advice for advice, _ in loaded.pairs]
+    age = export_age_days(posture.made_at, now)
+    return dict(data, agent={"id": posture.agent_id, "name": posture.agent_name}, os=posture.os_name,
+                made_at=posture.made_at, age_days=round(age, 1) if age is not None else None,
+                stale=age is None or age > STALE_DAYS, stale_days=STALE_DAYS, policy=dict(posture.policy),
+                counts={"failed": len(posture.checks), "passed": posture.passed,
+                        "not_applicable": posture.policy.get("invalid") or 0,
+                        "with_command": sum(row["action"] == "command" for row in rows),
+                        "held": sum(bool(a.held) for a in advice), "removed": sum(len(a.removed) for a in advice),
+                        "programs": len(posture.programs), "cves": sum(len(p.cves) for p in posture.programs),
+                        "not_on_home": sum(row["not_on_home"] for row in rows), "items": len(rows),
+                        "shown": len(shown)},
+                problems=list(posture.problems),
+                areas=sorted(areas.values(), key=lambda a: (-a["highest"], a["area"])),
+                filters={"area": area, "show": show}, items=shown)
+
+
+def _cve_status(program: Program, cve: Cve) -> str:
+    if read_condition(cve.condition) is None:
+        return "bound not readable"
+    if not comparable(cve.condition, program.version):
+        return "build date: check the version in the program itself"
+    return "fixed by the advised version" if fixes(program.bound, cve.condition) else "NOT fixed by the advised version"
+
+
+def item_data(loaded: Loaded, slug: str) -> dict | None:
+    """One item in full (also /api/posture/<id>), with the check or program it is about."""
+    if loaded.posture is None or slug not in loaded.slugs:
+        return None
+    index = loaded.slugs.index(slug)
+    advice, about = loaded.pairs[index]
+    posture = loaded.posture
+    data = {"rank": index + 1, "of": len(loaded.pairs), "slug": slug, "file": loaded.path.name,
+            "agent": {"id": posture.agent_id, "name": posture.agent_name}, "made_at": posture.made_at,
+            "item": advice.item, "kind": advice.kind, "title": advice.title, "area": advice.area,
+            "area_slug": area_slug(advice.area), "score": advice.score, "action": _action(advice),
+            "reasons": [{"points": points, "why": why} for points, why in advice.reasons],
+            "detail": advice.detail, "notes": list(advice.notes),
+            "steps": [{"kind": s.kind, "text": s.text, "source": s.source} for s in advice.steps],
+            "held": [{"why": why} for _, why in advice.held],  # held back means no command, here too
+            "removed": [{"text": text, "why": why} for text, why in advice.removed],
+            "links": list(advice.links), "check": None, "program": None}
+    if isinstance(about, Check):
+        data["check"] = {"policy": about.policy, "id": about.id, "cis": about.cis, "rationale": about.rationale,
+                         "targets": [{"key": t.key, "value": t.value, "wanted": t.wanted()} for t in about.targets],
+                         "why_no_target": about.why_no_target}
+    else:
+        data["program"] = {"name": about.name, "version": about.version, "type": about.type,
+                           "fix": about.bound.text(),
+                           "cves": [dict(c.__dict__, status=_cve_status(about, c)) for c in about.cves]}
+    return data

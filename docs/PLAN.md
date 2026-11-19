@@ -202,3 +202,6 @@ No case name or label reached any of the 76 prompts checked.
    weaken the PC; commands that could lock you out or break everyday use are
    held back. `evaluate` checks every bound and command. The lab manager's
    inventory had to be switched on first (its indexer address and login).
+   On the dashboard since D48: a Posture page ranks every item, with filters
+   and one page per item; a new export shows without a restart, and an old
+   one is flagged.

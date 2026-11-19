@@ -26,12 +26,19 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 def export_run(run_dir: Path | str, out: Path | str, *, label: str, notice: str | None = None,
-               site_home: str | None = None, policy_path: Path | str | None = None) -> int:
-    """Write every page of one run folder into ``out``. Returns the number of pages."""
+               site_home: str | None = None, policy_path: Path | str | None = None, posture=None,
+               posture_notice: str | None = None) -> int:
+    """Write every page of one run folder into ``out``. Returns the number of pages.
+
+    With ``posture`` (an aegis.posture.Loaded export), the posture page and one page per item too (D48).
+    """
+    from aegis import posture as posturing
+
     snap = snapshot.RunView(run_dir, policy_path).current()
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    extra = {"run_dir": label, "notice": notice, "site_home": site_home, "feed": None}
+    extra = {"run_dir": label, "notice": notice, "site_home": site_home, "feed": None,
+             "posture": posture is not None and posture.posture is not None}
 
     def with_header(data: dict) -> dict:
         data["header"] = dict(data["header"], **extra)
@@ -53,6 +60,12 @@ def export_run(run_dir: Path | str, out: Path | str, *, label: str, notice: str 
                   pages.incident_page(with_header(snapshot.incident_view(snap, incident))))
         for event in snap.events.values():
             write(links.event(event.event_id), pages.event_page(with_header(snapshot.event_view(snap, event))))
+        if extra["posture"]:
+            head = dict(snapshot.header(snap), **dict(extra, notice=posture_notice or notice))
+            write(links.posture(), pages.posture_page(dict(posturing.overview_data(posture), header=head)))
+            for slug in posture.slugs:
+                write(links.posture_item(slug),
+                      pages.posture_item_page(dict(posturing.item_data(posture, slug), header=head)))
     shutil.copyfile(WEB_DIR / "style.css", out / links.stylesheet())
     return written
 
