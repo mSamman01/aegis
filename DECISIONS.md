@@ -1119,9 +1119,23 @@ updates), so the attacker is a separate machine from the admin.
   script with stand-in nft/ss/ip and checks block/unblock/status reflect each
   other and every refusal denies before touching the firewall (skipped where
   there is no bash); `test_act.py` covers the executor's block path and proof.
-  The live end-to-end (attack -> alerts -> decide -> approve both -> act ->
-  Kali refused) is the user's to run; memory on the 16 GB laptop fits Wazuh 6
-  + victim 2 + Kali 2 GB with Ollama closed.
+
+Result (2026-11-19): the full run on the real lab. Kali (192.168.56.108,
+host-only + NAT) ran `aegis-attack` against aegis-victim: a port scan, eight
+failed SSH guesses for svc_backup, the real login, and `sudo cat /etc/shadow`.
+The live feed pulled it, Aegis scored inc-894c0325da63cc69 critical (87) and
+proposed, both waiting for a human, `block_ip 192.168.56.108` and
+`lock_account svc_backup`. After approval, `act` ran both on the VM:
+block_ip blocked=no -> blocked=yes, lock_account password=P -> password=L
+(expired), recorded in the audit log. Re-running the attack from Kali, the
+port scan turned from open/closed to filtered and the login timed out: the
+attacker was cut off at the firewall, not merely locked out of one account -
+the block the laptop's own address (D33) could never earn. The first attack
+script bundled the login and the sudo read into one SSH call fed by a
+here-string, which upset sshpass so the real login looked like a failure;
+splitting the login from the sudo read fixed it (the eight guesses, which
+never used a here-string, always worked). Memory held: Wazuh 6 + victim 2 +
+Kali 2 GB with Ollama closed, on the 16 GB laptop.
 
 Decision: block_ip is now a real, executed action, proven against a genuine
 attacker rather than a stand-in. The laptop stays advice-only (D7); actions

