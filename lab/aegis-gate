@@ -4,65 +4,145 @@
 # Aegis connects over SSH as the user aegis-exec. Its key is restricted to
 # this one command (see setup-lab.sh), and sudo lets aegis-exec run this
 # script as root and nothing else. The request arrives in
-# SSH_ORIGINAL_COMMAND and must be exactly:
+# SSH_ORIGINAL_COMMAND and must be exactly one of:
 #
-#     status <user>     report whether the account can log in
-#     lock <user>       lock the password, expire the account, end its processes
-#     unlock <user>     undo a lock (to reset the lab between runs)
+#   accounts (a Linux user name):
+#     status <user>        report whether the account can log in
+#     lock <user>          lock the password, expire the account, end its processes
+#     unlock <user>        undo a lock (to reset the lab between runs)
+#
+#   the firewall (an IPv4 address on the lab network):
+#     block-status <ip>    report whether the address is blocked, and open connections
+#     block <ip>           drop the address at the firewall and cut its connections
+#     unblock <ip>         undo a block (to reset the lab between runs)
 #
 # This script checks the request again, on the target, whatever Aegis
-# decided: protected and system accounts are refused here too.
-# Every request is logged to /var/log/aegis-gate.log.
+# decided: protected accounts and addresses are refused here too, and only
+# addresses on the lab's own network can be blocked. Every request is logged.
 
 set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-PROTECTED="root labadmin wazuh aegis-exec"
-LOG=/var/log/aegis-gate.log
+# The firewall tools, by name. A test can point these at stand-ins; on the VM the gate runs
+# only through 'sudo -n aegis-gate', which keeps just SSH_ORIGINAL_COMMAND, so these are
+# stripped there and always resolve to the real tools on the trusted PATH above.
+NFT="${NFT:-nft}"
+SS="${SS:-ss}"
+IPCMD="${IPCMD:-ip}"
+
+PROTECTED_USERS="root labadmin wazuh aegis-exec"
+PROTECTED_IPS="127.0.0.1 192.168.56.1 192.168.56.105"  # loopback, the laptop, the Wazuh manager
+LAB_SUBNET="192.168.56."                                # only the lab host-only network may be blocked
+LOG="${AEGIS_GATE_LOG:-/var/log/aegis-gate.log}"        # the default is the only path used on the VM
 REQUEST="${SSH_ORIGINAL_COMMAND:-}"
 
-log()  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
+log()  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || true; }
 deny() { log "DENIED request='${REQUEST//[^[:print:]]/?}' reason=$1"; printf 'DENIED %s\n' "$1"; exit 2; }
 
 read -r -a parts <<< "$REQUEST" || true
-[[ ${#parts[@]} -eq 2 ]] || deny "expected: status|lock|unlock <user>"
+[[ ${#parts[@]} -eq 2 ]] || deny "expected: status|lock|unlock <user>, or block-status|block|unblock <ip>"
 verb="${parts[0]}"
-user="${parts[1]}"
+target="${parts[1]}"
 
-[[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || deny "not a valid user name"
-for protected in $PROTECTED; do
-    [[ "$user" == "$protected" ]] && deny "$user is a protected account"
-done
-entry="$(getent passwd "$user")" || deny "no such user: $user"
-uid="$(cut -d: -f3 <<< "$entry")"
-(( uid >= 1000 )) || deny "$user is a system account (uid $uid)"
-
-status() {
+# -- accounts -------------------------------------------------------------
+account_status() {
     local password expires processes
-    password="$(passwd -S "$user" | awk '{print $2}')"
-    expires="$(chage -l "$user" | awk -F': ' '/^Account expires/ {print $2}')"
-    processes="$(pgrep -c -u "$user" || true)"
+    password="$(passwd -S "$target" | awk '{print $2}')"
+    expires="$(chage -l "$target" | awk -F': ' '/^Account expires/ {print $2}')"
+    processes="$(pgrep -c -u "$target" || true)"
     printf 'user=%s password=%s account_expires=%s processes=%s\n' \
-        "$user" "$password" "${expires// /_}" "${processes:-0}"
+        "$target" "$password" "${expires// /_}" "${processes:-0}"
+}
+
+do_account() {
+    [[ "$target" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || deny "not a valid user name"
+    local protected
+    for protected in $PROTECTED_USERS; do
+        [[ "$target" == "$protected" ]] && deny "$target is a protected account"
+    done
+    local entry uid
+    entry="$(getent passwd "$target")" || deny "no such user: $target"
+    uid="$(cut -d: -f3 <<< "$entry")"
+    (( uid >= 1000 )) || deny "$target is a system account (uid $uid)"
+    case "$verb" in
+        status) account_status ;;
+        lock)
+            usermod -L -e 1 "$target"        # lock the password and expire the account
+            pkill -KILL -u "$target" || true  # end anything already running as the user
+            log "LOCKED user=$target"
+            account_status
+            ;;
+        unlock)
+            usermod -U -e "" "$target"
+            log "UNLOCKED user=$target"
+            account_status
+            ;;
+    esac
+}
+
+# -- the firewall ---------------------------------------------------------
+own_addresses() { $IPCMD -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1; }
+
+ensure_table() {
+    $NFT list table inet aegis >/dev/null 2>&1 && return
+    # A table of our own, so the drop never touches rules anything else made.
+    $NFT -f - <<'RULES'
+table inet aegis {
+    set blocked {
+        type ipv4_addr
+    }
+    chain input {
+        type filter hook input priority -1; policy accept;
+        ip saddr @blocked drop
+    }
+}
+RULES
+}
+
+is_blocked() { $NFT get element inet aegis blocked "{ $1 }" >/dev/null 2>&1; }
+
+firewall_status() {
+    ensure_table
+    local blocked connections
+    is_blocked "$target" && blocked=yes || blocked=no
+    connections="$($SS -tn state established dst "$target" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')"
+    printf 'ip=%s blocked=%s connections=%s\n' "$target" "$blocked" "${connections:-0}"
+}
+
+do_firewall() {
+    local a b c d octet
+    IFS=. read -r a b c d <<< "$target"
+    [[ "$a.$b.$c.$d" == "$target" && "$a$b$c$d" =~ ^[0-9]+$ ]] || deny "not an IPv4 address"
+    for octet in "$a" "$b" "$c" "$d"; do (( octet >= 0 && octet <= 255 )) || deny "not an IPv4 address"; done
+    local protected
+    for protected in $PROTECTED_IPS; do
+        [[ "$target" == "$protected" ]] && deny "$target is a protected address"
+    done
+    while read -r own; do
+        [[ "$target" == "$own" ]] && deny "$target is this host's own address"
+    done < <(own_addresses)
+    [[ "$target" == "$LAB_SUBNET"* ]] || deny "only addresses on the lab network (192.168.56.0/24) can be blocked"
+    case "$verb" in
+        block-status) firewall_status ;;
+        block)
+            ensure_table
+            $NFT add element inet aegis blocked "{ $target }"
+            $SS -K dst "$target" >/dev/null 2>&1 || true   # cut sockets already open to that address
+            log "BLOCKED ip=$target"
+            firewall_status
+            ;;
+        unblock)
+            ensure_table
+            $NFT delete element inet aegis blocked "{ $target }" 2>/dev/null || true
+            log "UNBLOCKED ip=$target"
+            firewall_status
+            ;;
+    esac
 }
 
 case "$verb" in
-    status)
-        status
-        ;;
-    lock)
-        usermod -L -e 1 "$user"        # lock the password and expire the account
-        pkill -KILL -u "$user" || true  # end anything already running as the user
-        log "LOCKED user=$user"
-        status
-        ;;
-    unlock)
-        usermod -U -e "" "$user"
-        log "UNLOCKED user=$user"
-        status
-        ;;
-    *)
-        deny "unknown action: $verb"
-        ;;
+    status|lock|unlock)            do_account ;;
+    block-status|block|unblock)    do_firewall ;;
+    *)                             deny "unknown action: $verb" ;;
 esac

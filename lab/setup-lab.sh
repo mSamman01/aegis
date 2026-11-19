@@ -7,6 +7,10 @@
 #   svc_backup  - the account the lab attack will guess (you choose a weak password)
 #   aegis-exec  - the account Aegis connects as; its SSH key can only run aegis-gate,
 #                 only from the laptop (192.168.56.1), and sudo allows nothing else
+#
+# aegis-gate locks accounts and blocks addresses at the firewall (nftables),
+# both as root through the one sudo rule below. No extra sudo rule is needed
+# for the firewall: the gate runs nft itself.
 set -euo pipefail
 
 KEY="${1:-}"
@@ -45,8 +49,17 @@ if ! id svc_backup >/dev/null 2>&1; then
     passwd svc_backup
 fi
 
+echo "== firewall tool (aegis-gate blocks attacker addresses with it)"
+if command -v nft >/dev/null; then
+    echo "  nftables present: $(nft --version 2>/dev/null | head -1)"
+else
+    echo "  WARNING: nftables (nft) is not installed. 'block_ip' will fail until you run:"
+    echo "           sudo apt install -y nftables"
+fi
+
 echo "== SSH password logins (the attack needs them):"
 sshd -T 2>/dev/null | grep -i '^passwordauthentication' || true
 echo
 echo "Done. Test from the laptop:"
 echo "  ssh -i \$HOME\\.ssh\\aegis_lab aegis-exec@<this VM's address> status svc_backup"
+echo "  ssh -i \$HOME\\.ssh\\aegis_lab aegis-exec@<this VM's address> block-status 192.168.56.108"

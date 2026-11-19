@@ -45,6 +45,7 @@
 | Windows 11 laptop | runs Aegis and Ollama; Wazuh agent 001; advice only | 16 GB RAM, RTX 4050 (6 GB VRAM) |
 | Wazuh VM (VirtualBox) | manager + indexer + dashboard, 192.168.56.105 | 6 GB RAM (was 8), 4 cores; indexer heap 1 GB |
 | Lab VM `aegis-victim` (agent 002) | Ubuntu Server 24.04 with a Wazuh agent, 192.168.56.107; the only place actions run | 2 GB RAM, 1 core |
+| Kali VM (attacker, D49) | runs `lab/aegis-attack` against the victim; host-only 192.168.56.108 + NAT for updates; not monitored | 2 GB RAM, 2 cores |
 
 Memory budget on the laptop: Windows and apps use about 5-6 GB and the Wazuh
 VM is given 8 GB, so with the VM running only 2-3 GB is left. What that means:
@@ -126,7 +127,7 @@ reached over SSH by a key that can run nothing else (D29). `approve` records
 a human's sign-off bound to the incident, the policy and the action; `act`
 decides again from scratch and runs only approved actions, recording status
 before and after; `audit` verifies the hash chain, and `act` will not run on
-a broken one. Only `lock_account` is carried out so far.
+a broken one. `lock_account` and `block_ip` are carried out (D49).
 Result (2026-11-17): a real password-guessing attack on the lab VM - six
 failed guesses, a successful login as svc_backup, `sudo cat /etc/shadow` -
 scored 100 (critical). Aegis proposed locking svc_backup and refused to block
@@ -205,3 +206,12 @@ No case name or label reached any of the 76 prompts checked.
    On the dashboard since D48: a Posture page ranks every item, with filters
    and one page per item; a new export shows without a restart, and an old
    one is flagged.
+4. Kali attacker + block_ip end to end - code written (2026-11-19, D49).
+   A Kali VM on the host-only network gives the lab a real attacker with a
+   blockable address, separate from the admin laptop (which D33 could not do).
+   `lab/aegis-attack` replays the SSH brute force -> login -> `sudo cat
+   /etc/shadow`; `aegis-gate` gains `block`/`unblock`/`block-status` over
+   nftables (refusing protected and off-network addresses); `execute.py`
+   carries out `block_ip` with before/after proof. The live run (attack ->
+   decide -> approve lock + block -> act -> Kali refused) is the remaining
+   step the user does.

@@ -1080,3 +1080,51 @@ dashboard: `serve` has a Posture page next to Incidents and Audit log.
   sample now has them, from the synthetic export; the report version stays
   beside it.
 
+
+## D49 - Kali as a real attacker, and block_ip end to end (2026-11-19)
+The lab had one unrealistic trait that D33 called out: the attacker and the
+administrator were the same laptop (192.168.56.1), so the only attacking
+address was one the policy protects. Aegis could suggest blocking it but
+never would - and `block_ip`, though in the catalog and the policy, had no
+executor and was refused before it reached the gate.
+
+A Kali VM on the same host-only network fixes both. It gets its own lab
+address (192.168.56.108) on a second adapter (Adapter 1 stays NAT for
+updates), so the attacker is a separate machine from the admin.
+
+* `lab/aegis-attack` (runs on Kali): a quick port scan, a burst of wrong SSH
+  passwords for svc_backup, then the right one and `sudo cat /etc/shadow` -
+  the brute-force -> login -> sensitive-read story the manager already
+  alerts on, now from a blockable address. It refuses any target off
+  192.168.56.0/24, and never holds the password (from $AEGIS_LAB_PASSWORD or
+  a prompt; fed to the remote `sudo -S` over stdin, not on a command line).
+* `aegis-gate` gains `block-status`/`block`/`unblock <ip>` beside the account
+  verbs, using an nftables table of its own (`inet aegis`, a `blocked` set,
+  one drop rule at priority -1 so it never touches other rules). `block` adds
+  the address and cuts its open sockets (`ss -K`); the before/after is the
+  same set membership the gate reports. It refuses, on the VM, protected
+  addresses (the laptop, the manager, loopback), its own addresses, and
+  anything off 192.168.56.0/24 - a third check after the policy and the
+  executor. The three firewall tools are named through overridable variables
+  (NFT/SS/IPCMD) so the script is testable; sudo strips them on the VM, so
+  there they are always the real tools.
+* `execute.py`: one `_Plan` per action turns the gate into read -> change ->
+  read-again -> confirm. `block_ip` joins `lock_account`: it validates the
+  target is an IPv4 address, sends `block-status`/`block`/`block-status`, and
+  calls it done only when the address shows `blocked=yes` afterwards. Nothing
+  else about the executor changed; the risk rules already propose `block_ip`
+  for a guessing or guessed-from address, and the policy already allows it
+  (medium band, needs approval) unless the address is protected.
+* Tested without a VM: `tests/test_gate_script.py` runs the gate as a shell
+  script with stand-in nft/ss/ip and checks block/unblock/status reflect each
+  other and every refusal denies before touching the firewall (skipped where
+  there is no bash); `test_act.py` covers the executor's block path and proof.
+  The live end-to-end (attack -> alerts -> decide -> approve both -> act ->
+  Kali refused) is the user's to run; memory on the 16 GB laptop fits Wazuh 6
+  + victim 2 + Kali 2 GB with Ollama closed.
+
+Decision: block_ip is now a real, executed action, proven against a genuine
+attacker rather than a stand-in. The laptop stays advice-only (D7); actions
+still run only on the disposable lab VM, only the fixed catalog, only with a
+recorded human approval, and protected accounts and addresses can never be
+targeted whatever is approved.

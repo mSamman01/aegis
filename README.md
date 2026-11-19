@@ -102,8 +102,11 @@ python -m unittest
   `runs\approvals\<incident id>.json`. Only an action the policy marks
   "needs approval" can be approved.
 * `act <id>` decides the incident again from scratch, runs the approved
-  actions on the lab VM through `aegis-gate`, and prints the account's status
-  before and after. `--dry-run` shows what would run.
+  actions on the lab VM through `aegis-gate`, and prints the target's state
+  before and after. It carries out `lock_account` (lock a Linux account) and
+  `block_ip` (drop an attacker's address at the VM's firewall); the gate
+  refuses protected accounts and addresses, and only lab-network addresses can
+  be blocked. `--dry-run` shows what would run.
 * `audit` checks the audit log's hash chain and shows its last entries.
   `decide`, `approve` and `act` all write to it, and `act` refuses to run
   anything if the chain is broken.
@@ -185,12 +188,24 @@ spots: `data\posture` is ignored by git.
 ### The lab VM
 
 `lab/` holds the files for the lab VM, and the feed program and its setup
-script for the Wazuh manager (see The live feed). `aegis-gate` is the only program
-Aegis can run on the lab VM: `status`, `lock` or `unlock` of one user, refusing
-protected and system accounts on its own. `setup-lab.sh` installs it, creates
-the `aegis-exec` account Aegis connects as (key login only, from the laptop
-only, able to run the gate and nothing else) and the `svc_backup` account the
-lab attack guesses.
+script for the Wazuh manager (see The live feed). `aegis-gate` is the only
+program Aegis can run on the lab VM: `status`/`lock`/`unlock` of one user, and
+`block-status`/`block`/`unblock` of one address (with nftables), refusing
+protected accounts, protected addresses and any address off the lab network on
+its own. `setup-lab.sh` installs it, creates the `aegis-exec` account Aegis
+connects as (key login only, from the laptop only, able to run the gate and
+nothing else) and the `svc_backup` account the lab attack guesses.
+
+`lab/aegis-attack` runs on a Kali VM on the same host-only network and replays
+the intrusion Aegis is built to catch - a quick port scan, a burst of wrong
+SSH passwords for `svc_backup`, then the right one and `sudo cat /etc/shadow`.
+It refuses any target off `192.168.56.0/24`, and reads the real password from
+`$AEGIS_LAB_PASSWORD` or a prompt, never from the file. Because the attacker
+is now a separate machine (not the laptop), Aegis can both lock the account
+and block the attacker's address - the block the laptop's own address could
+never get (D33, D49). The end-to-end run: attack from Kali, pull the alerts,
+`decide`, approve `lock_account` and `block_ip`, `act`, and Kali's next try is
+refused at the firewall.
 
 ### The live feed
 
@@ -313,7 +328,7 @@ data/samples/  synthetic Wazuh-shaped alerts (safe to publish), the model's
                and a synthetic posture export (posture_sample.json)
 knowledge/     operator notes about this environment
 policy/        what Aegis may do, and where
-lab/           the gate for the lab VM, the feed for the manager, their setup scripts
+lab/           the gate and attack script for the lab VMs, the feed for the manager, setup scripts
 docs/PLAN.md   architecture and roadmap; docs/eval-results.md the results
 .github/       CI: the tests on Windows and Linux, and the demo on GitHub Pages
 tests/         unit tests

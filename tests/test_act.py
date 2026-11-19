@@ -136,10 +136,12 @@ class ApprovalFileTests(unittest.TestCase):
 class FakeGate:
     """Stands in for ssh + aegis-gate on the lab VM."""
 
-    def __init__(self, locks=True, fail_on=None, error=None):
+    def __init__(self, locks=True, blocks=True, fail_on=None, error=None):
         self.calls = []
         self.locked = False
+        self.blocked = False
         self.locks = locks
+        self.blocks = blocks
         self.fail_on = fail_on
         self.error = error
 
@@ -147,13 +149,18 @@ class FakeGate:
         self.calls.append(command)
         if self.error:
             raise self.error
-        verb, user = command[-1].split()
+        verb, target = command[-1].split()
         if verb == self.fail_on:
             return subprocess.CompletedProcess(command, 255, "", "ssh: connect to host x port 22: timed out\n")
         if verb == "lock" and self.locks:
             self.locked = True
-        state = "password=L account_expires=Jan_02,_1970" if self.locked else "password=P account_expires=never"
-        return subprocess.CompletedProcess(command, 0, f"user={user} {state} processes=0\n", "")
+        if verb == "block" and self.blocks:
+            self.blocked = True
+        if verb in ("status", "lock", "unlock"):
+            state = "password=L account_expires=Jan_02,_1970" if self.locked else "password=P account_expires=never"
+            return subprocess.CompletedProcess(command, 0, f"user={target} {state} processes=0\n", "")
+        blocked = "yes" if self.blocked else "no"
+        return subprocess.CompletedProcess(command, 0, f"ip={target} blocked={blocked} connections=0\n", "")
 
 
 class GateExecutorTests(unittest.TestCase):
@@ -171,6 +178,31 @@ class GateExecutorTests(unittest.TestCase):
         self.assertIn("IdentitiesOnly=yes", command)
         self.assertEqual(command[-2], "aegis-exec@192.168.56.107")
         self.assertTrue(command[2].endswith("aegis_lab") and "~" not in command[2])
+
+    def test_block_with_before_and_after(self):
+        gate = FakeGate()
+        result = GateExecutor("aegis-exec", "~/.ssh/aegis_lab", runner=gate).run(
+            "192.168.56.107", "block_ip", "192.168.56.108")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "address blocked at the firewall")
+        self.assertIn("blocked=no", result.before)
+        self.assertIn("blocked=yes", result.after)
+        self.assertEqual([c[-1] for c in gate.calls],
+                         ["block-status 192.168.56.108", "block 192.168.56.108", "block-status 192.168.56.108"])
+
+    def test_a_block_that_does_not_show_is_a_failure(self):
+        result = GateExecutor("u", "k", runner=FakeGate(blocks=False)).run("10.0.0.1", "block_ip", "192.168.56.108")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "the address does not show as blocked afterwards")
+
+    def test_block_refuses_a_bad_address_before_connecting(self):
+        for target in ("not-an-ip", "192.168.56.999", "10.0.0.1; reboot", "192.168.56.0/24", "svc_backup"):
+            with self.subTest(target=target):
+                gate = FakeGate()
+                result = GateExecutor("u", "k", runner=gate).run("10.0.0.1", "block_ip", target)
+                self.assertFalse(result.ok)
+                self.assertIn("not an IPv4 address", result.message)
+                self.assertEqual(gate.calls, [])
 
     def test_a_lock_that_does_not_show_is_a_failure(self):
         result = GateExecutor("u", "k", runner=FakeGate(locks=False)).run("10.0.0.1", "lock_account", "bob")
@@ -192,9 +224,10 @@ class GateExecutorTests(unittest.TestCase):
 
     def test_refused_before_connecting(self):
         for action, target, expected in (
-            ("block_ip", "10.0.0.9", "not available on the lab host"),
+            ("isolate_host", "aegis-victim", "not available on the lab host"),
             ("lock_account", "bob; rm -rf /", "not a plain Linux user name"),
             ("lock_account", "LAB\\bob", "not a plain Linux user name"),
+            ("block_ip", "10.0.0.1; reboot", "not an IPv4 address"),
         ):
             with self.subTest(action=action, target=target):
                 gate = FakeGate()
